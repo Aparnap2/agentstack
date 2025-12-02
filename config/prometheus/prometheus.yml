@@ -1,0 +1,439 @@
+# =============================================================================
+# AgentStack OSS - Prometheus Configuration for Phoenix Observability
+# Version: 1.0.0
+# Description: Production Prometheus configuration for LLM observability
+# =============================================================================
+# This Prometheus configuration is optimized for Phoenix Arize LLM tracing
+# with comprehensive metrics collection, alerting, and performance monitoring
+# =============================================================================
+
+global:
+  # -----------------------------------------------------------------------------
+  # Global Configuration
+  # -----------------------------------------------------------------------------
+  scrape_interval: 15s                    # Scrape interval for all targets
+  evaluation_interval: 15s                 # Evaluate rules every 15 seconds
+  scrape_timeout: 10s                       # Timeout for scraping targets
+
+  # External labels for multi-cluster setups
+  external_labels:
+    cluster: 'agentstack-production'
+    region: 'us-west-2'
+    datacenter: 'agentstack-dc1'
+    environment: 'production'
+    service: 'phoenix-observability'
+
+# -----------------------------------------------------------------------------
+# Remote Write Configuration (for long-term storage)
+# -----------------------------------------------------------------------------
+remote_write:
+  # Example: Send to Thanos for long-term storage
+  # - url: "http://thanos-receive:19291/api/v1/receive"
+  #   queue_config:
+  #     max_samples_per_send: 1000
+  #     max_shards: 200
+  #     capacity: 10000
+
+# -----------------------------------------------------------------------------
+# Alerting Configuration
+# -----------------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      timeout: 10s
+      api_version: v2
+
+# -----------------------------------------------------------------------------
+# Rule Files
+# -----------------------------------------------------------------------------
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+  - "/etc/prometheus/rules/*.yaml"
+
+# -----------------------------------------------------------------------------
+# Scrape Configurations
+# -----------------------------------------------------------------------------
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # Prometheus Self-Monitoring
+  # ---------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    # Relabel configurations
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'prometheus_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Phoenix Application Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'phoenix-application'
+    static_configs:
+      - targets: ['phoenix:6007']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    # Phoenix-specific labels
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'phoenix-agentstack'
+
+    metric_relabel_configs:
+      # Include Phoenix-specific metrics
+      - source_labels: [__name__]
+        regex: 'phoenix_.*'
+        action: keep
+
+      # Include OpenTelemetry metrics
+      - source_labels: [__name__]
+        regex: 'otel_.*'
+        action: keep
+
+      # Include LLM-specific metrics
+      - source_labels: [__name__]
+        regex: 'llm_.*'
+        action: keep
+
+      # Add resource attributes as labels
+      - source_labels: [service_name]
+        target_label: service
+        action: replace
+
+      - source_labels: [service_version]
+        target_label: version
+        action: replace
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'otel-collector-agentstack'
+
+    metric_relabel_configs:
+      # Include collector-specific metrics
+      - source_labels: [__name__]
+        regex: 'otelcol_.*'
+        action: keep
+
+      # Include OpenTelemetry metrics
+      - source_labels: [__name__]
+        regex: 'otel_.*'
+        action: keep
+
+      # Include process metrics
+      - source_labels: [__name__]
+        regex: 'process_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Phoenix PostgreSQL Database Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'phoenix-postgres'
+    static_configs:
+      - targets: ['phoenix-postgres:9187']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'phoenix-postgres-agentstack'
+
+      # Database connection parameters
+      - source_labels: [__address__]
+        target_label: db_host
+        replacement: 'phoenix-postgres'
+
+    metric_relabel_configs:
+      # Include PostgreSQL-specific metrics
+      - source_labels: [__name__]
+        regex: 'pg_.*'
+        action: keep
+
+      # Include pg_stat_statements metrics
+      - source_labels: [__name__]
+        regex: 'pg_stat_statements_.*'
+        action: keep
+
+      # Include vector database metrics
+      - source_labels: [__name__]
+        regex: 'pg_vector_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # AgentStack Application Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'agentstack-applications'
+    static_configs:
+      - targets:
+          - 'app:8080'
+          - 'worker:8080'
+          - 'api:8080'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      # Create separate instances for each service
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '(.*):.*'
+        replacement: '${1}-agentstack'
+
+    metric_relabel_configs:
+      # Include application-specific metrics
+      - source_labels: [__name__]
+        regex: 'agentstack_.*'
+        action: keep
+
+      # Include HTTP metrics
+      - source_labels: [__name__]
+        regex: 'http_.*'
+        action: keep
+
+      # Include business metrics
+      - source_labels: [__name__]
+        regex: 'business_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Grafana Metrics (self-monitoring)
+  # ---------------------------------------------------------------------------
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'grafana-agentstack'
+
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'grafana_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Docker Container Metrics (via cAdvisor)
+  # ---------------------------------------------------------------------------
+  - job_name: 'docker-containers'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      # Add container names as labels
+      - source_labels: [__name__]
+        target_label: instance
+        replacement: 'docker-agentstack'
+
+    metric_relabel_configs:
+      # Include container metrics
+      - source_labels: [__name__]
+        regex: 'container_.*'
+        action: keep
+
+      # Include CPU metrics
+      - source_labels: [__name__]
+        regex: 'container_cpu_.*'
+        action: keep
+
+      # Include memory metrics
+      - source_labels: [__name__]
+        regex: 'container_memory_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter Metrics (if available)
+  # ---------------------------------------------------------------------------
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'node-agentstack'
+
+    metric_relabel_configs:
+      # Include node metrics
+      - source_labels: [__name__]
+        regex: 'node_.*'
+        action: keep
+
+      # Exclude metrics that might cause high cardinality
+      - source_labels: [__name__]
+        regex: 'node_network_.*_receive_packets_total'
+        action: drop
+
+  # ---------------------------------------------------------------------------
+  # Custom Application Metrics (for agentstack services)
+  # ---------------------------------------------------------------------------
+  - job_name: 'agentstack-custom'
+    static_configs:
+      - targets:
+          - 'agentstack-worker:9090'
+          - 'agentstack-scheduler:9091'
+          - 'agentstack-orchestrator:9092'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      # Create service-specific instances
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '.*-(.*)'
+        replacement: 'agentstack-${1}'
+
+    metric_relabel_configs:
+      # Include custom business metrics
+      - source_labels: [__name__]
+        regex: 'agentstack_.*'
+        action: keep
+
+      # Include task-related metrics
+      - source_labels: [__name__]
+        regex: 'task_.*'
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # LLM Provider Metrics (for external monitoring)
+  # ---------------------------------------------------------------------------
+  - job_name: 'llm-providers'
+    static_configs:
+      - targets:
+          - 'openai-exporter:9090'    # If OpenAI metrics are available
+          - 'anthropic-exporter:9090' # If Anthropic metrics are available
+    metrics_path: '/metrics'
+    scrape_interval: 60s  # Less frequent for external APIs
+    scrape_timeout: 15s
+    honor_labels: true
+    honor_timestamps: true
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '(.*)-.*'
+        replacement: '${1}-provider'
+
+    metric_relabel_configs:
+      # Include provider metrics
+      - source_labels: [__name__]
+        regex: 'openai_.*|anthropic_.*'
+        action: keep
+
+      # Include API metrics
+      - source_labels: [__name__]
+        regex: 'api_.*'
+        action: keep
+
+# -----------------------------------------------------------------------------
+# Storage Configuration
+# -----------------------------------------------------------------------------
+storage:
+  tsdb:
+    # Data retention
+    retention.time: 90d
+    retention.size: 50GB
+
+    # WAL configuration
+    wal_compression: true
+    wal_segment_size: 64MB
+
+    # Block configuration
+    max_block_duration: 2h
+    block_pool_metadata_first: true
+
+    # Head chunk configuration
+    head_chunks_write_queue_size: 0  # 0 = default
+    head_chunks_write_queue_concurrency: 2
+
+# -----------------------------------------------------------------------------
+# Web Configuration
+# -----------------------------------------------------------------------------
+web:
+  # UI configuration
+  enable_admin_api: false
+  page_title: "AgentStack Phoenix Metrics"
+  external_url: "http://localhost:9090"
+
+  # CORS configuration
+  cors:
+    origins: ['http://localhost:3001']  # Grafana
+    methods: ['GET', 'POST']
+    headers: ['Accept', 'Accept-Language', 'Content-Type', 'Content-Language']
+
+  # API configuration
+  enable_lifecycle: true
+  read_timeout: 5m
+  max_connections: 512
+
+# -----------------------------------------------------------------------------
+# Query Configuration
+# -----------------------------------------------------------------------------
+query:
+  # Query engine configuration
+  max_concurrent_queries: 20
+  max_samples_per_query: 50000000
+  timeout: 2m
+
+  # Query result caching
+  enable_engine: true
+
+  # Metadata configuration
+  lookback_delta: 5m
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+# This Prometheus configuration provides comprehensive monitoring for the
+# Phoenix observability stack with specific focus on LLM operations,
+# performance metrics, and system health.
+# =============================================================================

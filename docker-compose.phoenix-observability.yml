@@ -1,0 +1,796 @@
+# =============================================================================
+# AgentStack OSS - Production Phoenix Observability Stack
+# Version: 1.0.0
+# Description: Production-grade LLM observability with Phoenix Arize
+# Usage: docker-compose -f docker-compose.phoenix-observability.yml up -d
+# =============================================================================
+# Production Dashboard URLs:
+#   - Phoenix UI: http://localhost:6006
+#   - OpenTelemetry Collector: http://localhost:4318 (HTTP) / 4317 (gRPC)
+#   - Prometheus Metrics: http://localhost:9090
+#   - Grafana Dashboards: http://localhost:3001
+#   - Phoenix Health: http://localhost:6006/health
+# =============================================================================
+
+version: '3.8'
+
+# -----------------------------------------------------------------------------
+# NETWORKS - Production-Grade Network Isolation
+# -----------------------------------------------------------------------------
+networks:
+  # Phoenix observability network
+  phoenix-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+          gateway: 172.22.0.1
+
+  # Monitoring network for Prometheus/Grafana
+  monitoring-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
+          gateway: 172.23.0.1
+
+  # Application network for LLM services
+  application-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16
+          gateway: 172.24.0.1
+
+# -----------------------------------------------------------------------------
+# VOLUMES - Production-Grade Data Persistence
+# -----------------------------------------------------------------------------
+volumes:
+  # Phoenix data with PostgreSQL backend
+  phoenix_postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/phoenix/postgres
+
+  # Phoenix application data
+  phoenix_app_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/phoenix/app
+
+  # WAL archive for Phoenix PostgreSQL
+  phoenix_wal_archive:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/backup/phoenix/wal
+
+  # OpenTelemetry collector data
+  otel_collector_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/otel-collector
+
+  # Prometheus data
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/prometheus
+
+  # Grafana data
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/grafana
+
+  # SSL certificates for secure communication
+  phoenix_ssl:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/ssl/phoenix
+
+  # Configuration volumes
+  phoenix_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/config/phoenix
+
+  # Log volumes
+  phoenix_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/logs/phoenix
+
+# -----------------------------------------------------------------------------
+# SECRETS - Production Secrets Management
+# -----------------------------------------------------------------------------
+secrets:
+  phoenix_postgres_password:
+    file: /opt/agentstack/secrets/phoenix_postgres_password.txt
+  phoenix_api_key:
+    file: /opt/agentstack/secrets/phoenix_api_key.txt
+  phoenix_jwt_secret:
+    file: /opt/agentstack/secrets/phoenix_jwt_secret.txt
+  grafana_admin_password:
+    file: /opt/agentstack/secrets/grafana_admin_password.txt
+
+# -----------------------------------------------------------------------------
+# SERVICES - Production-Grade Phoenix Observability Stack
+# -----------------------------------------------------------------------------
+services:
+  # ---------------------------------------------------------------------------
+  # 1. PHOENIX POSTGRESQL - Dedicated Database for Phoenix
+  # ---------------------------------------------------------------------------
+  phoenix-postgres:
+    image: pgvector/pgvector:pg17-0.8.0
+    container_name: agentstack-phoenix-postgres
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL Configuration
+      POSTGRES_USER: ${PHOENIX_POSTGRES_USER:-phoenix}
+      POSTGRES_DB: ${PHOENIX_POSTGRES_DB:-phoenix}
+      POSTGRES_PASSWORD_FILE: /run/secrets/phoenix_postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C --data-checksums"
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+
+      # Phoenix Database Optimizations
+      POSTGRES_SHARED_BUFFERS: ${PHOENIX_POSTGRES_SHARED_BUFFERS:-512MB}
+      POSTGRES_WORK_MEM: ${PHOENIX_POSTGRES_WORK_MEM:-32MB}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${PHOENIX_POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${PHOENIX_POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}
+
+      # Connection Configuration
+      POSTGRES_MAX_CONNECTIONS: ${PHOENIX_POSTGRES_MAX_CONNECTIONS:-300}
+      POSTGRES_SUPERUSER_RESERVED_CONNECTIONS: 5
+
+      # WAL and Checkpoint Configuration
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: 0.9
+      POSTGRES_WAL_BUFFERS: 32MB
+      POSTGRES_MAX_WAL_SIZE: 2GB
+      POSTGRES_MIN_WAL_SIZE: 160MB
+
+      # Logging Configuration
+      POSTGRES_LOG_MIN_DURATION_STATEMENT: 500
+      POSTGRES_LOG_STATEMENT: "ddl"
+      POSTGRES_LOG_CHECKPOINTS: "on"
+      POSTGRES_LOG_CONNECTIONS: "on"
+      POSTGRES_LOG_DISCONNECTIONS: "on"
+      POSTGRES_LOG_LOCK_WAITS: "on"
+
+      # SSL Configuration
+      POSTGRES_SSL: "on"
+      POSTGRES_SSL_CERT_FILE: "/opt/agentstack/phoenix/ssl/server.crt"
+      POSTGRES_SSL_KEY_FILE: "/opt/agentstack/phoenix/ssl/server.key"
+      POSTGRES_SSL_CA_FILE: "/opt/agentstack/phoenix/ssl/ca.crt"
+
+      # Timezone Configuration
+      TZ: "UTC"
+      PGTZ: "UTC"
+
+      # Phoenix-specific extensions
+      POSTGRES_EXTENSIONS: "vector,uuid-ossp,pg_trgm,btree_gin,pg_stat_statements,citext,pgcrypto,pg_stat_kcache"
+
+    # Port configuration (internal only for production)
+    ports:
+      - "${PHOENIX_POSTGRES_PORT:-5433}:5432"
+
+    # Volume mounts for production persistence
+    volumes:
+      - phoenix_postgres_data:/var/lib/postgresql/data
+      - phoenix_wal_archive:/opt/agentstack/phoenix/wal_archive
+      - phoenix_ssl:/opt/agentstack/phoenix/ssl:ro
+      - phoenix_logs:/var/log/agentstack/phoenix
+      - ./config/phoenix/postgresql:/opt/agentstack/phoenix/config:ro
+      - ./init/phoenix:/docker-entrypoint-initdb.d:ro
+      - ./scripts/phoenix:/opt/agentstack/phoenix/scripts:ro
+
+    # Secrets for secure credential management
+    secrets:
+      - phoenix_postgres_password
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PHOENIX_POSTGRES_USER:-phoenix} -d ${PHOENIX_POSTGRES_DB:-phoenix}"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    # Resource limits optimized for Phoenix workloads
+    deploy:
+      resources:
+        limits:
+          cpus: '3.0'
+          memory: 4G
+        reservations:
+          cpus: '1.5'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+
+    # User and group configuration
+    user: "999:999"
+
+    # Network configuration
+    networks:
+      phoenix-network:
+        ipv4_address: 172.22.0.10
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=phoenix-postgres,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=phoenix-postgres"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=9187"
+      - "prometheus.path=/metrics"
+
+  # ---------------------------------------------------------------------------
+  # 2. PHOENIX SERVER - Main Observability Platform
+  # ---------------------------------------------------------------------------
+  phoenix:
+    image: arizephoenix/phoenix:latest-nonroot
+    container_name: agentstack-phoenix
+    restart: unless-stopped
+
+    environment:
+      # Phoenix Server Configuration
+      PHOENIX_HOST: ${PHOENIX_HOST:-0.0.0.0}
+      PHOENIX_PORT: ${PHOENIX_PORT:-6006}
+      PHOENIX_WORKING_DIR: "/opt/agentstack/phoenix/data"
+
+      # PostgreSQL Backend Configuration
+      PHOENIX_SQL_DATABASE_URL: "postgresql://${PHOENIX_POSTGRES_USER:-phoenix}:$(cat /run/secrets/phoenix_postgres_password)@phoenix-postgres:5432/${PHOENIX_POSTGRES_DB:-phoenix}?sslmode=prefer"
+
+      # Project and Environment Configuration
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-agentstack-production}
+      PHOENIX_ENVIRONMENT: ${PHOENIX_ENVIRONMENT:-production}
+      PHOENIX_SERVICE_NAME: ${PHOENIX_SERVICE_NAME:-agentstack-phoenix}
+
+      # OpenTelemetry Collector Configuration
+      PHOENIX_COLLECTOR_ENDPOINT: "http://otel-collector:4317"
+      PHOENIX_COLLECTOR_GRPC_ENDPOINT: "http://otel-collector:4317"
+      PHOENIX_COLLECTOR_HTTP_ENDPOINT: "http://otel-collector:4318"
+
+      # Tracing Configuration
+      PHOENIX_TRACING_ENABLED: "true"
+      PHOENIX_TRACING_SAMPLE_RATE: ${PHOENIX_TRACING_SAMPLE_RATE:-1.0}
+      PHOENIX_BATCH_TIMEOUT: "5s"
+      PHOENIX_MAX_EXPORT_BATCH_SIZE: "512"
+      PHOENIX_MAX_QUEUE_SIZE: "2048"
+
+      # Security Configuration
+      PHOENIX_AUTH_ENABLED: ${PHOENIX_AUTH_ENABLED:-true}
+      PHOENIX_JWT_SECRET_FILE: "/run/secrets/phoenix_jwt_secret"
+      PHOENIX_CORS_ENABLED: "true"
+      PHOENIX_CORS_ORIGINS: ${PHOENIX_CORS_ORIGINS:-http://localhost:3001,http://localhost:3000}
+
+      # Performance Configuration
+      PHOENIX_MAX_WORKERS: ${PHOENIX_MAX_WORKERS:-4}
+      PHOENIX_WORKER_TIMEOUT: "30s"
+      PHOENIX_REQUEST_TIMEOUT: "60s"
+
+      # Metrics Configuration
+      PHOENIX_METRICS_ENABLED: "true"
+      PHOENIX_METRICS_PORT: "6007"
+      PHOENIX_PROMETHEUS_ENABLED: "true"
+      PHOENIX_PROMETHEUS_PORT: "6007"
+
+      # Data Retention Configuration
+      PHOENIX_DATA_RETENTION_DAYS: ${PHOENIX_DATA_RETENTION_DAYS:-90}
+      PHOENIX_MAX_TRACE_SIZE: "1MB"
+      PHOENIX_COMPRESSION_ENABLED: "true"
+
+      # Logging Configuration
+      PHOENIX_LOG_LEVEL: ${PHOENIX_LOG_LEVEL:-INFO}
+      PHOENIX_LOG_FORMAT: "json"
+      PHOENIX_ACCESS_LOG: "true"
+
+      # SSL/TLS Configuration
+      PHOENIX_SSL_ENABLED: ${PHOENIX_SSL_ENABLED:-true}
+      PHOENIX_SSL_CERT_PATH: "/opt/agentstack/phoenix/ssl/server.crt"
+      PHOENIX_SSL_KEY_PATH: "/opt/agentstack/phoenix/ssl/server.key"
+
+      # Timezone Configuration
+      TZ: "UTC"
+
+    # Port configuration
+    ports:
+      - "${PHOENIX_PORT:-6006}:6006"      # Phoenix UI
+      - "6007:6007"                         # Phoenix Metrics (Prometheus)
+      - "4317:4317"                         # OpenTelemetry gRPC
+      - "4318:4318"                         # OpenTelemetry HTTP
+
+    # Volume mounts for production persistence
+    volumes:
+      - phoenix_app_data:/opt/agentstack/phoenix/data
+      - phoenix_ssl:/opt/agentstack/phoenix/ssl:ro
+      - phoenix_config:/opt/agentstack/phoenix/config:ro
+      - phoenix_logs:/var/log/agentstack/phoenix
+      - ./config/phoenix:/opt/agentstack/phoenix/config:ro
+      - ./scripts/phoenix:/opt/agentstack/phoenix/scripts:ro
+
+    # Secrets for secure credential management
+    secrets:
+      - phoenix_postgres_password
+      - phoenix_jwt_secret
+      - phoenix_api_key
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits optimized for Phoenix workloads
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 6G
+        reservations:
+          cpus: '2.0'
+          memory: 3G
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 180s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "1001:1001"
+
+    # Network configuration
+    networks:
+      phoenix-network:
+        ipv4_address: 172.22.0.20
+      monitoring-network:
+        ipv4_address: 172.23.0.20
+      application-network:
+        ipv4_address: 172.24.0.20
+
+    # Dependencies
+    depends_on:
+      phoenix-postgres:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=phoenix,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=phoenix"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=6007"
+      - "prometheus.path=/metrics"
+      - "traefik.enable=true"
+      - "traefik.http.routers.phoenix.rule=Host(`phoenix.localhost`)"
+      - "traefik.http.services.phoenix.loadbalancer.server.port=6006"
+
+  # ---------------------------------------------------------------------------
+  # 3. OPEN TELEMETRY COLLECTOR - Trace Collection and Processing
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: agentstack-otel-collector
+    restart: unless-stopped
+
+    environment:
+      # Collector Configuration
+      OTEL_COLLECTOR_NAME: "agentstack-otel-collector"
+      OTEL_RESOURCE_ATTRIBUTES: "service.name=agentstack-otel-collector,service.version=v1.0.0,deployment.environment=production"
+
+      # Performance Configuration
+      OTEL_BLRP_BATCH_TIMEOUT: "5s"
+      OTEL_BLRP_BATCH_SIZE: "1024"
+      OTEL_BLRP_MAX_BATCH_SIZE: "2048"
+      OTEL_BLRP_MAX_CONCURRENT_EXPORTS: "4"
+      OTEL_BLRP_EXPORT_TIMEOUT: "30s"
+
+      # Metrics Configuration
+      OTEL_METRICS_EXPORTER: "prometheus"
+      OTEL_EXPORTER_PROMETHEUS_PORT: "8889"
+      OTEL_EXPORTER_PROMETHEUS_HOST: "0.0.0.0"
+
+      # Health Check Configuration
+      OTEL_HEALTH_CHECK_ENABLED: "true"
+      OTEL_HEALTH_CHECK_PORT: "13133"
+
+      # Extensions Configuration
+      OTEL_EXTENSIONS: "health_check,pprof,zpages"
+
+    # Port configuration
+    ports:
+      - "4317:4317"        # OpenTelemetry gRPC receiver
+      - "4318:4318"        # OpenTelemetry HTTP receiver
+      - "8888:8888"        # Prometheus metrics (default)
+      - "8889:8889"        # Prometheus metrics (custom)
+      - "13133:13133"      # Health check
+      - "55679:55679"      # zpages
+
+    # Volume mounts for configuration
+    volumes:
+      - otel_collector_data:/etc/otelcol
+      - ./config/otel-collector:/etc/otelcol-contrib:ro
+      - ./logs/otel-collector:/var/log/otel-collector
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "65532:65532"
+
+    # Network configuration
+    networks:
+      phoenix-network:
+        ipv4_address: 172.22.0.30
+      monitoring-network:
+        ipv4_address: 172.23.0.30
+      application-network:
+        ipv4_address: 172.24.0.30
+
+    # Dependencies
+    depends_on:
+      phoenix:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service=otel-collector,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=otel-collector"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=8889"
+      - "prometheus.path=/metrics"
+
+  # ---------------------------------------------------------------------------
+  # 4. PROMETHEUS - Metrics Collection and Storage
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: agentstack-prometheus
+    restart: unless-stopped
+
+    environment:
+      # Prometheus Configuration
+      PROMETHEUS_CONFIG_FILE: "/etc/prometheus/prometheus.yml"
+      PROMETHEUS_STORAGE_DIR: "/prometheus"
+      PROMETHEUS_RETENTION: "${PROMETHEUS_RETENTION:-90d}"
+      PROMETHEUS_WEB_EXTERNAL_URL: "http://localhost:9090"
+      PROMETHEUS_WEB_ENABLE_ADMIN_API: "false"
+      PROMETHEUS_WEB_PAGE_TITLE: "AgentStack Phoenix Metrics"
+
+      # Performance Configuration
+      PROMETHEUS_STORAGE_TSDB_RETENTION_TIME: "90d"
+      PROMETHEUS_STORAGE_TSDB_WAL_COMPRESSION: "true"
+      PROMETHEUS_STORAGE_TSDB_MAX_BLOCK_DURATION: "2h"
+
+      # Query Configuration
+      PROMETHEUS_QUERY_TIMEOUT: "2m"
+      PROMETHEUS_QUERY_MAX_SAMPLES: "50000000"
+      PROMETHEUS_QUERY_MAX_CONCURRENCY: "20"
+
+    # Port configuration
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+    # Volume mounts for configuration and data
+    volumes:
+      - prometheus_data:/prometheus
+      - ./config/prometheus:/etc/prometheus:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - ./logs/prometheus:/var/log/prometheus
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 180s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "65534:65534"
+
+    # Network configuration
+    networks:
+      monitoring-network:
+        ipv4_address: 172.23.0.40
+
+    # Dependencies
+    depends_on:
+      phoenix:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=prometheus,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=prometheus"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.localhost`)"
+
+  # ---------------------------------------------------------------------------
+  # 5. GRAFANA - Visualization and Dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: agentstack-grafana
+    restart: unless-stopped
+
+    environment:
+      # Grafana Configuration
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD_FILE: "/run/secrets/grafana_admin_password"
+      GF_SECURITY_SECRET_KEY_FILE: "/run/secrets/grafana_admin_password"
+
+      # Server Configuration
+      GF_SERVER_DOMAIN: "localhost"
+      GF_SERVER_ROOT_URL: "http://localhost:3001"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "false"
+      GF_SERVER_ENABLE_GZIP: "true"
+      GF_SERVER_HTTP_PORT: "3000"
+
+      # Database Configuration (SQLite for simplicity)
+      GF_DATABASE_TYPE: "sqlite3"
+      GF_DATABASE_PATH: "/var/lib/grafana/grafana.db"
+      GF_DATABASE_MAX_IDLE_CONN: "2"
+      GF_DATABASE_MAX_OPEN_CONN: "0"
+      GF_DATABASE_CONN_MAX_LIFETIME: "14400"
+
+      # Security Configuration
+      GF_SECURITY_ALLOW_EMBEDDING: "false"
+      GF_SECURITY_COOKIE_SECURE: "false"
+      GF_SECURITY_COOKIE_SAMESITE: "lax"
+      GF_SECURITY_CONTENT_TYPE_PROTECTION: "true"
+      GF_SECURITY_X_CONTENT_TYPE_OPTIONS: "nosniff"
+      GF_SECURITY_X_XSS_PROTECTION: "1; mode=block"
+
+      # Analytics and Telemetry
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+
+      # Logging Configuration
+      GF_LOG_MODE: "file"
+      GF_LOG_LEVEL: "info"
+      GF_LOG_MAX_DAYS: "7"
+      GF_LOG_MAX_SIZE: "100"
+      GF_LOG_MAX_FILES: "5"
+
+      # Plugins Configuration
+      GF_INSTALL_PLUGINS: "grafana-clock-panel,grafana-simple-json-datasource"
+      GF_PLUGIN_ADMIN_ENABLED: "false"
+      GF_PLUGIN_ENABLE_ALPHA: "false"
+
+      # SMTP Configuration (for alerts)
+      GF_SMTP_ENABLED: "${GF_SMTP_ENABLED:-false}"
+      GF_SMTP_HOST: "${GF_SMTP_HOST:-}"
+      GF_SMTP_USER: "${GF_SMTP_USER:-}"
+      GF_SMTP_PASSWORD: "${GF_SMTP_PASSWORD:-}"
+      GF_SMTP_FROM_ADDRESS: "${GF_SMTP_FROM_ADDRESS:-alerts@agentstack.local}"
+
+      # Metrics Configuration
+      GF_METRICS_ENABLED: "true"
+      GF_METRICS_PORT: "9091"
+
+      # Tracing Configuration
+      GF_TRACING_ENABLED: "false"
+
+      # Timezone Configuration
+      TZ: "UTC"
+
+    # Port configuration
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+
+    # Volume mounts for configuration and data
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./logs/grafana:/var/log/grafana
+
+    # Secrets for secure credential management
+    secrets:
+      - grafana_admin_password
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 180s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "472:0"
+
+    # Network configuration
+    networks:
+      monitoring-network:
+        ipv4_address: 172.23.0.50
+
+    # Dependencies
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service=grafana,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=grafana"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================

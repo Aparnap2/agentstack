@@ -1,0 +1,38 @@
+# =============================================================================
+# AgentStack OSS - Test Database Only
+# =============================================================================
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. DATABASE: PostgreSQL + pgvector
+  # ---------------------------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: agentstack-db-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-agentstack}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - agentstack-test-network
+
+volumes:
+  postgres_test_data:
+    driver: local
+
+networks:
+  agentstack-test-network:
+    driver: bridge

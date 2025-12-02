@@ -1,0 +1,76 @@
+# =============================================================================
+# LiteLLM Proxy Configuration
+# =============================================================================
+# Documentation: https://docs.litellm.ai/docs/proxy/config_settings
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Model List (Add your models here)
+# -----------------------------------------------------------------------------
+model_list:
+  # OpenAI Models
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Embedding Models
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: text-embedding-3-large
+    litellm_params:
+      model: openai/text-embedding-3-large
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Anthropic Models (if key provided)
+  - model_name: claude-3-5-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Local Models (Uncomment if using Ollama)
+  # - model_name: llama3
+  #   litellm_params:
+  #     model: ollama/llama3
+  #     api_base: http://host.docker.internal:11434
+
+# -----------------------------------------------------------------------------
+# LiteLLM Settings
+# -----------------------------------------------------------------------------
+litellm_settings:
+  # Enable Phoenix Tracing
+  callbacks: ["arize_phoenix"]
+
+  # Logging
+  set_verbose: false
+  json_logs: true
+
+  # Request Settings
+  request_timeout: 120
+
+  # Cost Tracking
+  success_callback: ["arize_phoenix"]
+  failure_callback: ["arize_phoenix"]
+
+# -----------------------------------------------------------------------------
+# General Settings
+# -----------------------------------------------------------------------------
+general_settings:
+  # Master Key for Admin Access (optional)
+  # master_key: sk-agentstack-master-key
+
+  # Enable detailed debug logging
+  debug: false

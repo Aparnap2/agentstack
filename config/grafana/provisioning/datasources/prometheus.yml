@@ -1,0 +1,472 @@
+# =============================================================================
+# AgentStack OSS - Grafana Prometheus Datasource Configuration
+# Version: 1.0.0
+# Description: Production Prometheus datasource for Phoenix LLM observability
+# =============================================================================
+# This datasource configuration connects Grafana to Prometheus for comprehensive
+# LLM observability dashboards with Phoenix Arize integration
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  # ---------------------------------------------------------------------------
+  # Primary Prometheus Datasource
+  # ---------------------------------------------------------------------------
+  - name: AgentStack Phoenix Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Prometheus configuration
+      timeInterval: "15s"
+      queryTimeout: "60s"
+      httpMethod: "POST"
+
+      # Prometheus query settings
+      exemplarTraceIdDestinations:
+        - datasourceUid: phoenix-traces
+          name: traceID
+        - datasourceUid: phoenix-logs
+          name: traceID
+
+      # Prometheus features
+      prometheusType: "Prometheus"
+      prometheusVersion: "2.45.0"
+      cacheLevel: "High"
+      disableRecordingRules: false
+      incrementalQueryOverlapWindow: "10m"
+
+      # Alerting
+      alertmanagerUid: "agentstack-alertmanager"
+      manageAlerts: true
+      disableRules: false
+
+      # Frontend settings
+      editable: true
+
+      # Tracing integration
+      tracesToLogs:
+        datasourceUid: phoenix-logs
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [
+          { key: 'service.name', value: 'service' }
+          { key: 'service.instance.id', value: 'instance' }
+        ]
+        mapTagNamesEnabled: true
+        spanStartTimeShift: "1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+      tracesToMetrics:
+        datasourceUid: phoenix-traces
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [
+          { key: 'service.name', value: 'service' }
+          { key: 'service.instance.id', value: 'instance' }
+        ]
+        mapTagNamesEnabled: true
+
+      logsToTraces:
+        datasourceUid: phoenix-logs
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [
+          { key: 'service.name', value: 'service' }
+          { key: 'service.instance.id', value: 'instance' }
+        ]
+        mapTagNamesEnabled: true
+        spanStartTimeShift: "1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: agentstack-prometheus
+    orgId: 1
+    isDefault: true
+    version: 1
+
+    # Configuration for Phoenix-specific metrics
+    jsonData:
+      # Prometheus settings
+      timeInterval: "15s"
+      queryTimeout: "60s"
+      httpMethod: "POST"
+
+      # Phoenix-specific settings
+      customQueryParameters:
+        'partial_response_strategy': "warn"
+        'timeout': "60s"
+
+      # Dashboard integration
+      defaultEditor: "code"
+
+    # Basic authentication (disabled for local deployment)
+    basicAuth: false
+    basicAuthUser: ""
+    basicAuthPassword: ""
+
+    # TLS settings (disabled for local deployment)
+    withCredentials: false
+    tlsAuth: false
+    tlsAuthWithCACert: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: false
+
+    # Health check
+    jsonData:
+      httpHeaderName1: "X-Grafana-Org-ID"
+      httpHeaderValue1: "1"
+
+  # ---------------------------------------------------------------------------
+  # Phoenix PostgreSQL Datasource
+  # ---------------------------------------------------------------------------
+  - name: Phoenix PostgreSQL
+    type: postgres
+    access: proxy
+    url: phoenix-postgres:5432
+    database: phoenix
+    user: phoenix
+    password: ""
+    jsonData:
+      # PostgreSQL connection
+      sslmode: "prefer"
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+
+      # PostgreSQL features
+      postgresVersion: 1700
+      timescaledb: false
+
+      # Query settings
+      maxIdleConnsAuto: true
+      connMaxLifetimeAuto: true
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData:
+      password: ""  # Will be set via environment variable
+
+    # Datasource configuration
+    uid: phoenix-postgres
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector Metrics Datasource
+  # ---------------------------------------------------------------------------
+  - name: OpenTelemetry Collector Metrics
+    type: prometheus
+    access: proxy
+    url: http://otel-collector:8889
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Collector-specific settings
+      timeInterval: "30s"
+      queryTimeout: "30s"
+      httpMethod: "POST"
+
+      # Metrics format
+      exemplarTraceIdDestinations:
+        - datasourceUid: agentstack-prometheus
+          name: traceID
+
+      # Collector features
+      prometheusType: "Prometheus"
+      prometheusVersion: "2.45.0"
+      cacheLevel: "High"
+      disableRecordingRules: false
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: otel-collector-metrics
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+  # ---------------------------------------------------------------------------
+  # Loki Logs Datasource (for OpenTelemetry logs)
+  # ---------------------------------------------------------------------------
+  - name: Phoenix Logs
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Loki configuration
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: agentstack-prometheus
+          matcherRegex: "traceID=(\\w+)"
+          name: "TraceID"
+          url: "$${__value.raw}"
+          urlDisplayLabel: "View Trace"
+
+      # Loki settings
+      step: 1
+          editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: phoenix-logs
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+  # ---------------------------------------------------------------------------
+  # Phoenix Traces Datasource (for OpenTelemetry traces)
+  # ---------------------------------------------------------------------------
+  - name: Phoenix Traces
+    type: tempo
+    access: proxy
+    url: http://phoenix:6006
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Tempo configuration
+      tracesToLogs:
+        datasourceUid: phoenix-logs
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [
+          { key: 'service.name', value: 'service' }
+          { key: 'service.instance.id', value: 'instance' }
+        ]
+        mapTagNamesEnabled: true
+        spanStartTimeShift: "1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+      tracesToMetrics:
+        datasourceUid: agentstack-prometheus
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [
+          { key: 'service.name', value: 'service' }
+          { key: 'service.instance.id', value: 'instance' }
+        ]
+        mapTagNamesEnabled: true
+
+      search:
+        filter: "{service.name =~ \".*\"}"
+
+      # Node graph
+      nodeGraph:
+        enabled: true
+
+      # Service map
+      serviceMap:
+        enabled: true
+
+      # Trace ID settings
+      traceIdFieldName: "traceID"
+      spanIdFieldName: "spanID"
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: phoenix-traces
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager Datasource
+  # ---------------------------------------------------------------------------
+  - name: AgentStack Alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Alertmanager configuration
+      implementation: "prometheus"
+
+      # Alert settings
+      handleGrafanaManagedAlerts: true
+      externalAlertmanagerDisabled: false
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: agentstack-alertmanager
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: false
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter Datasource (for system metrics)
+  # ---------------------------------------------------------------------------
+  - name: System Metrics
+    type: prometheus
+    access: proxy
+    url: http://node-exporter:9100
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # System metrics settings
+      timeInterval: "30s"
+      queryTimeout: "30s"
+      httpMethod: "POST"
+
+      # Node exporter features
+      prometheusType: "Prometheus"
+      prometheusVersion: "2.45.0"
+      cacheLevel: "High"
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: system-metrics
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+  # ---------------------------------------------------------------------------
+  # cAdvisor Datasource (for container metrics)
+  # ---------------------------------------------------------------------------
+  - name: Container Metrics
+    type: prometheus
+    access: proxy
+    url: http://cadvisor:8080
+    database: ""
+    user: ""
+    password: ""
+    jsonData:
+      # Container metrics settings
+      timeInterval: "30s"
+      queryTimeout: "30s"
+      httpMethod: "POST"
+
+      # cAdvisor features
+      prometheusType: "Prometheus"
+      prometheusVersion: "2.45.0"
+      cacheLevel: "High"
+
+      # Frontend settings
+      editable: true
+
+    secureJsonData: {}
+
+    # Datasource configuration
+    uid: container-metrics
+    orgId: 1
+    isDefault: false
+    version: 1
+
+    # Basic authentication
+    basicAuth: false
+
+    # TLS settings
+    withCredentials: false
+    tlsAuth: false
+    tlsSkipVerify: true
+
+    # Read-only access
+    readOnly: true
+
+# =============================================================================
+# END OF DATASOURCE CONFIGURATION
+# =============================================================================
+# This datasource configuration provides comprehensive connectivity for
+# Phoenix LLM observability dashboards with all necessary data sources
+# including Prometheus, PostgreSQL, Loki, Tempo, and system metrics.
+# =============================================================================

@@ -1,0 +1,568 @@
+# =============================================================================
+# AgentStack OSS - Production pREST Configuration
+# Version: 2.0.0
+# Description: Advanced security, performance, and monitoring configuration
+# =============================================================================
+# Documentation: https://docs.prestd.com/
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# SERVER CONFIGURATION
+# ---------------------------------------------------------------------------
+[server]
+# Basic server settings
+host = "0.0.0.0"
+port = 3000
+read_timeout = 30
+write_timeout = 30
+idle_timeout = 60
+max_header_bytes = 1048576  # 1MB
+
+# SSL/TLS Configuration
+[server.tls]
+enabled = true
+cert_file = "/opt/prest/ssl/server.crt"
+key_file = "/opt/prest/ssl/server.key"
+ca_file = "/opt/prest/ssl/ca.crt"
+min_version = "1.2"
+cipher_suites = [
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+]
+
+# ---------------------------------------------------------------------------
+# DATABASE CONFIGURATION
+# ---------------------------------------------------------------------------
+[database]
+# Connection settings
+host = "pgbouncer"
+port = 6432
+user = "${PREST_PG_USER}"
+pass = "${PREST_PG_PASS}"
+database = "${PREST_PG_DATABASE}"
+ssl_mode = "require"
+ssl_cert = "/opt/prest/ssl/client.crt"
+ssl_key = "/opt/prest/ssl/client.key"
+ssl_root_cert = "/opt/prest/ssl/ca.crt"
+
+# Connection pooling
+max_open_conn = 25
+max_idle_conn = 5
+conn_max_lifetime = 300  # seconds
+conn_max_idle_time = 60  # seconds
+
+# Performance settings
+context_timeout = 30
+batch_size = 100
+batch_memory_limit = 10485760  # 10MB
+single_partition = true
+
+# ---------------------------------------------------------------------------
+# AUTHENTICATION & AUTHORIZATION
+# ---------------------------------------------------------------------------
+[auth]
+enabled = true
+default_type = "jwt"
+
+# JWT Configuration
+[auth.jwt]
+enabled = true
+secret = "${PREST_JWT_KEY}"
+algo = "HS256"
+expires_in = 3600  # 1 hour
+refresh_expires_in = 604800  # 7 days
+issuer = "agentstack-prest"
+audience = "agentstack-users"
+cookie_name = "prest_jwt"
+cookie_secure = true
+cookie_http_only = true
+cookie_same_site = "strict"
+exclude_paths = ["/health", "/metrics", "/docs"]
+
+# OAuth2 Configuration (optional)
+[auth.oauth2]
+enabled = false
+providers = ["google", "github", "microsoft"]
+redirect_url = "https://api.agentstack.local/auth/callback"
+scopes = ["openid", "profile", "email"]
+
+[auth.oauth2.google]
+client_id = "${GOOGLE_CLIENT_ID}"
+client_secret = "${GOOGLE_CLIENT_SECRET}"
+auth_url = "https://accounts.google.com/o/oauth2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+user_info_url = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+[auth.oauth2.github]
+client_id = "${GITHUB_CLIENT_ID}"
+client_secret = "${GITHUB_CLIENT_SECRET}"
+auth_url = "https://github.com/login/oauth/authorize"
+token_url = "https://github.com/login/oauth/access_token"
+user_info_url = "https://api.github.com/user"
+
+# API Key Configuration
+[auth.api_key]
+enabled = true
+header_name = "X-API-Key"
+query_param = "api_key"
+cookie_name = "prest_api_key"
+
+# Role-Based Access Control (RBAC)
+[auth.rbac]
+enabled = true
+default_role = "anonymous"
+roles_table = "user_roles"
+permissions_table = "role_permissions"
+hierarchy = ["admin", "manager", "user", "viewer", "anonymous"]
+
+# Role permissions
+[auth.rbac.permissions]
+admin = ["read", "write", "delete", "admin"]
+manager = ["read", "write", "delete"]
+user = ["read", "write"]
+viewer = ["read"]
+anonymous = ["read:public"]
+
+# Table-level security
+[auth.table_security]
+enabled = true
+default_access = "deny"
+excluded_tables = ["secrets", "tokens", "sessions", "audit_logs"]
+read_only_tables = ["audit_logs", "system_configs", "login_attempts"]
+
+# Row-Level Security (RLS)
+[auth.rls]
+enabled = true
+user_id_column = "user_id"
+role_id_column = "role_id"
+tenant_id_column = "tenant_id"
+
+# ---------------------------------------------------------------------------
+# SECURITY HEADERS & CORS
+# ---------------------------------------------------------------------------
+[security]
+headers_enabled = true
+rate_limiting_enabled = true
+input_validation_enabled = true
+sql_injection_protection = true
+xss_protection = true
+
+# Security Headers
+[security.headers]
+content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none';"
+x_frame_options = "DENY"
+x_content_type_options = "nosniff"
+x_xss_protection = "1; mode=block"
+strict_transport_security = "max-age=31536000; includeSubDomains; preload"
+referrer_policy = "strict-origin-when-cross-origin"
+permissions_policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+# CORS Configuration
+[security.cors]
+enabled = true
+allow_origins = ["https://agentstack.local", "https://api.agentstack.local"]
+allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+allow_headers = ["Authorization", "Content-Type", "X-Requested-With", "X-API-Key", "Accept", "Origin"]
+expose_headers = ["X-Total-Count", "X-Rate-Limit-Remaining", "X-Rate-Limit-Reset"]
+allow_credentials = true
+max_age = 86400  # 24 hours
+
+# Rate Limiting
+[security.rate_limiting]
+enabled = true
+default_limit = 1000
+default_window = 3600  # 1 hour
+burst = 100
+cleanup_interval = 300  # 5 minutes
+
+# Per-endpoint rate limits
+[[security.rate_limiting.endpoints]]
+path = "/auth/login"
+limit = 10
+window = 300  # 5 minutes
+burst = 5
+
+[[security.rate_limiting.endpoints]]
+path = "/auth/register"
+limit = 5
+window = 300  # 5 minutes
+burst = 2
+
+# IP Whitelisting/Blacklisting
+[security.ip_control]
+whitelist_enabled = false
+blacklist_enabled = true
+whitelist = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+blacklist = []
+
+# ---------------------------------------------------------------------------
+# CACHE CONFIGURATION
+# ---------------------------------------------------------------------------
+[cache]
+enabled = true
+type = "redis"
+default_ttl = 300  # 5 minutes
+max_memory = "256mb"
+eviction_policy = "allkeys-lru"
+
+# Redis cache configuration
+[cache.redis]
+host = "redis"
+port = 6379
+password = "${REDIS_PASSWORD}"
+database = 1
+pool_size = 10
+min_idle_conns = 5
+dial_timeout = 5
+read_timeout = 3
+write_timeout = 3
+idle_timeout = 300
+max_retries = 3
+
+# Cache rules
+[[cache.rules]]
+method = "GET"
+path_pattern = "^/users/[^/]+$"
+ttl = 600
+tags = ["users", "profile"]
+
+[[cache.rules]]
+method = "GET"
+path_pattern = "^/config/.*$"
+ttl = 3600
+tags = ["config"]
+
+# ---------------------------------------------------------------------------
+# MONITORING & OBSERVABILITY
+# ---------------------------------------------------------------------------
+[monitoring]
+enabled = true
+metrics_enabled = true
+tracing_enabled = true
+logging_enabled = true
+
+# Prometheus Metrics
+[monitoring.metrics]
+path = "/metrics"
+namespace = "prest"
+subsystem = "api"
+
+# Request metrics
+[monitoring.metrics.requests]
+enabled = true
+include_method = true
+include_path = true
+include_status = true
+include_duration = true
+
+# Database metrics
+[monitoring.metrics.database]
+enabled = true
+include_connections = true
+include_queries = true
+include_slow_queries = true
+slow_query_threshold = 1000  # milliseconds
+
+# Application metrics
+[monitoring.metrics.app]
+enabled = true
+include_cache = true
+include_auth = true
+include_errors = true
+
+# Jaeger Tracing
+[monitoring.tracing]
+enabled = true
+service_name = "agentstack-prest-api"
+sampling_type = "probabilistic"
+sampling_param = 0.1  # 10% sampling
+jaeger_endpoint = "http://jaeger:14268/api/traces"
+
+[monitoring.tracing.tags]
+version = "2.0.0"
+environment = "production"
+service_type = "api"
+
+# Logging Configuration
+[monitoring.logging]
+enabled = true
+level = "info"
+format = "json"
+output = "stdout"
+file_path = "/var/log/prest/prest.log"
+max_size = 100  # MB
+max_backups = 10
+max_age = 30  # days
+compress = true
+
+[monitoring.logging.fields]
+timestamp = true
+level = true
+method = true
+path = true
+status = true
+duration = true
+ip = true
+user_agent = true
+user_id = true
+request_id = true
+trace_id = true
+
+# Request logging
+[monitoring.logging.requests]
+enabled = true
+log_body = false
+log_headers = false
+max_body_size = 1024
+exclude_health_checks = true
+
+# ---------------------------------------------------------------------------
+# PERFORMANCE OPTIMIZATION
+# ---------------------------------------------------------------------------
+[performance]
+enabled = true
+compression_enabled = true
+compression_level = 6
+min_compression_size = 1024
+
+# Query optimization
+[performance.queries]
+default_limit = 1000
+max_limit = 10000
+timeout = 30
+parallel_queries = true
+explain_analyze_threshold = 5000  # milliseconds
+
+# Connection optimization
+[performance.connections]
+keep_alive = true
+keep_alive_timeout = 60
+max_idle_connections = 100
+max_idle_connections_per_host = 10
+idle_connection_timeout = 90
+
+# Response optimization
+[performance.responses]
+streaming_enabled = true
+chunk_size = 8192
+buffer_size = 65536
+write_buffer_size = 65536
+
+# ---------------------------------------------------------------------------
+# PLUGIN SYSTEM
+# ---------------------------------------------------------------------------
+[plugins]
+enabled = true
+plugin_path = "/opt/prest/plugins"
+auto_load = true
+
+# Authentication plugins
+[[plugins.auth]]
+name = "ldap"
+enabled = false
+config_file = "/etc/prest/plugins/ldap.toml"
+
+[[plugins.auth]]
+name = "saml"
+enabled = false
+config_file = "/etc/prest/plugins/saml.toml"
+
+# Middleware plugins
+[[plugins.middleware]]
+name = "request-id"
+enabled = true
+config_file = "/etc/prest/plugins/request-id.toml"
+
+[[plugins.middleware]]
+name = "audit-log"
+enabled = true
+config_file = "/etc/prest/plugins/audit-log.toml"
+
+[[plugins.middleware]]
+name = "api-versioning"
+enabled = true
+config_file = "/etc/prest/plugins/api-versioning.toml"
+
+# Transformation plugins
+[[plugins.transformation]]
+name = "data-masking"
+enabled = false
+config_file = "/etc/prest/plugins/data-masking.toml"
+
+[[plugins.transformation]]
+name = "field-encryption"
+enabled = false
+config_file = "/etc/prest/plugins/field-encryption.toml"
+
+# ---------------------------------------------------------------------------
+# API DOCUMENTATION
+# ---------------------------------------------------------------------------
+[docs]
+enabled = true
+path = "/docs"
+title = "AgentStack pREST API"
+description = "Production-grade REST API for AgentStack OSS"
+version = "2.0.0"
+contact_name = "AgentStack OSS Team"
+contact_email = "dev@agentstack.local"
+contact_url = "https://agentstack.local"
+license_name = "MIT"
+license_url = "https://github.com/agentstack/agentstack-oss/blob/main/LICENSE"
+
+# OpenAPI specification
+[docs.openapi]
+enabled = true
+servers = [
+    {url = "https://api.agentstack.local", description = "Production"},
+    {url = "https://api-staging.agentstack.local", description = "Staging"}
+]
+
+# ReDoc documentation
+[docs.redoc]
+enabled = true
+theme = "dark"
+hide_download = true
+hide_hostname = true
+expand_responses = "200,201"
+
+# Swagger UI
+[docs.swagger]
+enabled = true
+try_it_out_enabled = false
+display_request_duration = true
+filter = true
+show_extensions = true
+show_common_extensions = true
+
+# ---------------------------------------------------------------------------
+# HEALTH CHECKS
+# ---------------------------------------------------------------------------
+[health]
+enabled = true
+path = "/health"
+detailed_path = "/health/detailed"
+liveness_path = "/health/live"
+readiness_path = "/health/ready"
+
+# Database health check
+[health.database]
+enabled = true
+timeout = 10
+query = "SELECT 1"
+
+# Redis health check
+[health.cache]
+enabled = true
+timeout = 5
+key = "health_check"
+
+# External dependencies health check
+[health.external]
+enabled = true
+timeout = 5
+endpoints = [
+    {name = "auth_service", url = "https://auth.agentstack.local/health"},
+    {name = "notification_service", url = "https://notify.agentstack.local/health"}
+]
+
+# ---------------------------------------------------------------------------
+# DEVELOPMENT & DEBUGGING
+# ---------------------------------------------------------------------------
+[development]
+debug = false
+profiling_enabled = false
+profiling_path = "/debug/pprof"
+verbose_logging = false
+query_logging = false
+
+# ---------------------------------------------------------------------------
+# MIGRATION & SCHEMA
+# ---------------------------------------------------------------------------
+[migration]
+enabled = true
+auto_migrate = false
+schema_validation = true
+table_validation = true
+column_validation = true
+
+[migration.exclusions]
+tables = ["schema_migrations", "flyway_schema_history"]
+schemas = ["information_schema", "pg_catalog", "pg_toast"]
+
+# ---------------------------------------------------------------------------
+# BACKUP & DISASTER RECOVERY
+# ---------------------------------------------------------------------------
+[backup]
+enabled = false
+schedule = "0 2 * * *"  # Daily at 2 AM
+retention_days = 30
+compression = true
+encryption = false
+storage_path = "/opt/prest/backups"
+
+# ---------------------------------------------------------------------------
+# FEATURE FLAGS
+# ---------------------------------------------------------------------------
+[features]
+# Experimental features
+experimental_queries = false
+experimental_indexes = false
+experimental_extensions = false
+
+# Beta features
+beta_vector_enhancements = false
+beta_query_optimizer = false
+beta_caching = false
+
+# Security features
+advanced_auditing = true
+field_level_encryption = false
+data_masking = false
+sql_injection_detection = true
+
+# Performance features
+query_caching = true
+connection_pooling = true
+response_compression = true
+request_streaming = true
+
+# ---------------------------------------------------------------------------
+# ENVIRONMENT-SPECIFIC CONFIGURATIONS
+# ---------------------------------------------------------------------------
+[environments.production]
+debug = false
+log_level = "info"
+cache_enabled = true
+metrics_enabled = true
+tracing_enabled = true
+security_headers_enabled = true
+rate_limiting_enabled = true
+audit_logging_enabled = true
+
+[environments.staging]
+debug = true
+log_level = "debug"
+cache_enabled = true
+metrics_enabled = true
+tracing_enabled = true
+security_headers_enabled = true
+rate_limiting_enabled = true
+audit_logging_enabled = true
+
+[environments.development]
+debug = true
+log_level = "debug"
+cache_enabled = false
+metrics_enabled = true
+tracing_enabled = false
+security_headers_enabled = false
+rate_limiting_enabled = false
+audit_logging_enabled = true
+
+# ---------------------------------------------------------------------------
+# END OF CONFIGURATION
+# =============================================================================

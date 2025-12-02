@@ -1,0 +1,408 @@
+# =============================================================================
+# AgentStack OSS - Phoenix LLM Observability Alerting Rules
+# Version: 1.0.0
+# Description: Production alerting rules for LLM observability with Phoenix
+# =============================================================================
+# These alerting rules are specifically designed for LLM workloads and
+# Phoenix Arize observability patterns with comprehensive coverage for
+# performance, reliability, and business metrics
+# =============================================================================
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Phoenix Core Service Alerts
+  # ---------------------------------------------------------------------------
+  - name: phoenix_core_service_alerts
+    rules:
+      # Phoenix Service Down
+      - alert: PhoenixServiceDown
+        expr: up{job="phoenix-application"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: phoenix
+          category: availability
+        annotations:
+          summary: "Phoenix observability service is down"
+          description: "Phoenix service at {{ $labels.instance }} has been down for more than 1 minute"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/service-down"
+          dashboard_url: "http://localhost:3001/d/phoenix-overview"
+
+      # Phoenix High Error Rate
+      - alert: PhoenixHighErrorRate
+        expr: rate(phoenix_trace_spans_total{status="error"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: phoenix
+          category: performance
+        annotations:
+          summary: "Phoenix is experiencing high error rate"
+          description: "Phoenix error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-error-rate"
+          dashboard_url: "http://localhost:3001/d/phoenix-performance"
+
+      # Phoenix High Latency
+      - alert: PhoenixHighLatency
+        expr: histogram_quantile(0.95, rate(phoenix_trace_duration_seconds_bucket[5m])) > 10
+        for: 3m
+        labels:
+          severity: warning
+          service: phoenix
+          category: performance
+        annotations:
+          summary: "Phoenix is experiencing high latency"
+          description: "95th percentile latency is {{ $value }}s which is above 10s threshold"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-latency"
+          dashboard_url: "http://localhost:3001/d/phoenix-performance"
+
+      # Phoenix Memory Usage High
+      - alert: PhoenixMemoryUsageHigh
+        expr: process_resident_memory_bytes{job="phoenix-application"} / 1e9 > 4
+        for: 5m
+        labels:
+          severity: warning
+          service: phoenix
+          category: resource
+        annotations:
+          summary: "Phoenix memory usage is high"
+          description: "Phoenix memory usage is {{ $value | humanize }}GB which is above 4GB threshold"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-memory-usage"
+          dashboard_url: "http://localhost:3001/d/phoenix-resources"
+
+  # ---------------------------------------------------------------------------
+  # LLM Performance Alerts
+  # ---------------------------------------------------------------------------
+  - name: llm_performance_alerts
+    rules:
+      # LLM High Response Time
+      - alert: LLMHighResponseTime
+        expr: histogram_quantile(0.95, rate(phoenix_trace_duration_seconds_bucket{llm_model=~".+"}[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: llm
+          category: performance
+        annotations:
+          summary: "LLM response time is high"
+          description: "95th percentile LLM response time for model {{ $labels.llm_model }} is {{ $value }}s"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-high-response-time"
+          dashboard_url: "http://localhost:3001/d/llm-performance"
+
+      # LLM High Error Rate
+      - alert: LLMHighErrorRate
+        expr: rate(phoenix_trace_spans_total{status="error", llm_model=~".+"}[5m]) / rate(phoenix_trace_spans_total{llm_model=~".+"}[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          service: llm
+          category: reliability
+        annotations:
+          summary: "LLM error rate is high"
+          description: "LLM error rate for model {{ $labels.llm_model }} is {{ $value | humanizePercentage }}"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-high-error-rate"
+          dashboard_url: "http://localhost:3001/d/llm-reliability"
+
+      # LLM Rate Limiting
+      - alert: LLMRateLimiting
+        expr: increase(phoenix_trace_spans_total{error_type="rate_limit"}[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          service: llm
+          category: rate_limiting
+        annotations:
+          summary: "LLM rate limiting detected"
+          description: "{{ $value }} rate limit errors detected for model {{ $labels.llm_provider }} in the last 5 minutes"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-rate-limiting"
+          dashboard_url: "http://localhost:3001/d/llm-usage"
+
+      # LLM Content Filtering
+      - alert: LLMContentFilteringHigh
+        expr: increase(phoenix_trace_spans_total{error_type="content_filter"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: llm
+          category: content_filtering
+        annotations:
+          summary: "High LLM content filtering"
+          description: "{{ $value }} content filter errors detected for model {{ $labels.llm_model }} in the last 5 minutes"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-content-filtering"
+          dashboard_url: "http://localhost:3001/d/llm-content-filtering"
+
+  # ---------------------------------------------------------------------------
+  # LLM Cost and Usage Alerts
+  # ---------------------------------------------------------------------------
+  - name: llm_cost_usage_alerts
+    rules:
+      # LLM High Token Usage
+      - alert: LLMHighTokenUsage
+        expr: increase(phoenix_trace_llm_token_usage_total[1h]) > 100000
+        for: 0m
+        labels:
+          severity: warning
+          service: llm
+          category: cost
+        annotations:
+          summary: "High LLM token usage detected"
+          description: "{{ $value | humanize }} tokens used in the last hour"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-high-token-usage"
+          dashboard_url: "http://localhost:3001/d/llm-usage"
+
+      # LLM High Cost
+      - alert: LLMHighCost
+        expr: increase(phoenix_trace_llm_estimated_cost_usd_total[1h]) > 100
+        for: 0m
+        labels:
+          severity: warning
+          service: llm
+          category: cost
+        annotations:
+          summary: "High LLM cost detected"
+          description: "${{ $value }} USD spent on LLM calls in the last hour"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-high-cost"
+          dashboard_url: "http://localhost:3001/d/llm-cost"
+
+      # LLM Daily Budget Alert
+      - alert: LLMDailyBudgetExceeded
+        expr: increase(phoenix_trace_llm_estimated_cost_usd_total[24h]) > 1000
+        for: 0m
+        labels:
+          severity: critical
+          service: llm
+          category: budget
+        annotations:
+          summary: "Daily LLM budget exceeded"
+          description: "${{ $value }} USD spent on LLM calls in the last 24 hours (budget: $1000)"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/llm-budget-exceeded"
+          dashboard_url: "http://localhost:3001/d/llm-cost"
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database Alerts
+  # ---------------------------------------------------------------------------
+  - name: phoenix_database_alerts
+    rules:
+      # PostgreSQL Connection Issues
+      - alert: PhoenixPostgreSQLConnectionIssues
+        expr: pg_stat_activity_count{datname=~".*phoenix.*"} / pg_settings_max_connections > 0.8
+        for: 2m
+        labels:
+          severity: warning
+          service: phoenix-postgres
+          category: database
+        annotations:
+          summary: "Phoenix PostgreSQL connection usage high"
+          description: "{{ $value | humanizePercentage }} of connections in use for Phoenix PostgreSQL"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/postgres-connection-issues"
+          dashboard_url: "http://localhost:3001/d/phoenix-database"
+
+      # PostgreSQL High Memory Usage
+      - alert: PhoenixPostgreSQLHighMemoryUsage
+        expr: pg_stat_database_xact_commit{datname=~".*phoenix.*"} > 10000
+        for: 5m
+        labels:
+          severity: warning
+          service: phoenix-postgres
+          category: performance
+        annotations:
+          summary: "High transaction rate in Phoenix PostgreSQL"
+          description: "{{ $value }} transactions per second in Phoenix database"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/postgres-high-load"
+          dashboard_url: "http://localhost:3001/d/phoenix-database"
+
+      # PostgreSQL Slow Queries
+      - alert: PhoenixPostgreSQLSlowQueries
+        expr: pg_stat_statements_mean_time_ms{datname=~".*phoenix.*"} > 5000
+        for: 3m
+        labels:
+          severity: warning
+          service: phoenix-postgres
+          category: performance
+        annotations:
+          summary: "Slow queries detected in Phoenix PostgreSQL"
+          description: "Average query time is {{ $value }}ms in Phoenix database"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/postgres-slow-queries"
+          dashboard_url: "http://localhost:3001/d/phoenix-database"
+
+      # PostgreSQL Disk Space High
+      - alert: PhoenixPostgreSQLDiskSpaceHigh
+        expr: (pg_database_size_bytes{datname=~".*phoenix.*"} / 1e9) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: phoenix-postgres
+          category: storage
+        annotations:
+          summary: "Phoenix PostgreSQL database size is high"
+          description: "Phoenix PostgreSQL database size is {{ $value | humanize }}GB"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/postgres-disk-space"
+          dashboard_url: "http://localhost:3001/d/phoenix-storage"
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector Alerts
+  # ---------------------------------------------------------------------------
+  - name: otel_collector_alerts
+    rules:
+      # Collector Drop Rate High
+      - alert: OtelCollectorDropRateHigh
+        expr: rate(otelcol_processor_dropped_spans_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: otel-collector
+          category: reliability
+        annotations:
+          summary: "OpenTelemetry collector dropping spans"
+          description: "{{ $value | humanize }} spans dropped per second"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/otel-collector-drops"
+          dashboard_url: "http://localhost:3001/d/otel-collector"
+
+      # Collector Export Failures
+      - alert: OtelCollectorExportFailures
+        expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: otel-collector
+          category: reliability
+        annotations:
+          summary: "OpenTelemetry collector export failures"
+          description: "{{ $value | humanize }} span export failures per second"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/otel-collector-export-failures"
+          dashboard_url: "http://localhost:3001/d/otel-collector"
+
+      # Collector Memory Pressure
+      - alert: OtelCollectorMemoryPressure
+        expr: otelcol_processor_memory_limiter_limit_bytes / otelcol_process_resident_memory_bytes < 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: otel-collector
+          category: resource
+        annotations:
+          summary: "OpenTelemetry collector under memory pressure"
+          description: "Memory limiter close to process memory limit"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/otel-collector-memory"
+          dashboard_url: "http://localhost:3001/d/otel-collector"
+
+  # ---------------------------------------------------------------------------
+  # System Resource Alerts
+  # ---------------------------------------------------------------------------
+  - name: system_resource_alerts
+    rules:
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          category: cpu
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-cpu-usage"
+          dashboard_url: "http://localhost:3001/d/system-resources"
+
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          category: memory
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-memory-usage"
+          dashboard_url: "http://localhost:3001/d/system-resources"
+
+      # Disk Space High
+      - alert: DiskSpaceHigh
+        expr: (1 - (node_filesystem_avail_bytes / node_filesystem_size_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+          category: storage
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk usage is {{ $value | humanizePercentage }} on {{ $labels.device }} of {{ $labels.instance }}"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/disk-space-high"
+          dashboard_url: "http://localhost:3001/d/system-resources"
+
+  # ---------------------------------------------------------------------------
+  # Business Metrics Alerts
+  # ---------------------------------------------------------------------------
+  - name: business_metrics_alerts
+    rules:
+      # Low LLM Usage
+      - alert: LowLLMUsage
+        expr: increase(phoenix_trace_spans_total{llm_model=~".+"}[1h]) < 10
+        for: 30m
+        labels:
+          severity: warning
+          service: business
+          category: usage
+        annotations:
+          summary: "Low LLM usage detected"
+          description: "Only {{ $value }} LLM calls in the last hour"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/low-llm-usage"
+          dashboard_url: "http://localhost:3001/d/business-metrics"
+
+      # High Error Rate for Users
+      - alert: HighUserErrorRate
+        expr: rate(phoenix_trace_spans_total{status="error", user_id!=""}[5m]) / rate(phoenix_trace_spans_total{user_id!=""}[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: business
+          category: user_experience
+        annotations:
+          summary: "High error rate for users"
+          description: "User error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/high-user-error-rate"
+          dashboard_url: "http://localhost:3001/d/user-experience"
+
+  # ---------------------------------------------------------------------------
+  # Data Quality Alerts
+  # ---------------------------------------------------------------------------
+  - name: data_quality_alerts
+    rules:
+      # Missing Trace Attributes
+      - alert: MissingTraceAttributes
+        expr: rate(phoenix_trace_spans_total{llm_model=""}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: data_quality
+          category: instrumentation
+        annotations:
+          summary: "Missing LLM model attribute in traces"
+          description: "{{ $value | humanize }} traces per second missing LLM model attribute"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/missing-trace-attributes"
+          dashboard_url: "http://localhost:3001/d/data-quality"
+
+      # Trace Size Too Large
+      - alert: TraceSizeTooLarge
+        expr: histogram_quantile(0.95, rate(phoenix_trace_size_bytes_bucket[5m])) > 1048576  # 1MB
+        for: 5m
+        labels:
+          severity: warning
+          service: data_quality
+          category: trace_size
+        annotations:
+          summary: "Trace size is too large"
+          description: "95th percentile trace size is {{ $value | humanizeBytes }}"
+          runbook_url: "https://docs.arize.com/phoenix/troubleshooting/large-trace-size"
+          dashboard_url: "http://localhost:3001/d/data-quality"
+
+# =============================================================================
+# END OF ALERTING RULES
+# =============================================================================
+# These alerting rules provide comprehensive coverage for LLM observability
+# with Phoenix Arize, covering service health, performance, cost, and
+# business metrics with specific focus on production reliability.
+# =============================================================================

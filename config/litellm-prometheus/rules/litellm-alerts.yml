@@ -1,0 +1,393 @@
+# =============================================================================
+# AgentStack OSS - LiteLLM Production Alert Rules
+# Version: 1.0.0
+# Description: Production-grade alerting for LiteLLM AI Gateway
+# Last Updated: 2025-12-01
+# =============================================================================
+
+groups:
+  # ---------------------------------------------------------------------------
+  # LiteLLM Gateway Health Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.health
+    rules:
+      - alert: LiteLLMGatewayDown
+        expr: up{job="agentstack-litellm"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: health
+        annotations:
+          summary: "LiteLLM Gateway is down"
+          description: "LiteLLM Gateway instance {{ $labels.instance }} has been down for more than 1 minute."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-gateway-down"
+
+      - alert: LiteLLMHighErrorRate
+        expr: rate(litellm_error_count[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: errors
+        annotations:
+          summary: "High error rate on LiteLLM Gateway"
+          description: "LiteLLM Gateway error rate is {{ $value | printf \"%.2f\" }} errors/second for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-error-rate"
+
+      - alert: LiteLLMHighLatency
+        expr: histogram_quantile(0.95, rate(litellm_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: performance
+        annotations:
+          summary: "High latency on LiteLLM Gateway"
+          description: "95th percentile latency is {{ $value | printf \"%.2f\" }}s for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-latency"
+
+      - alert: LiteLLMVeryHighLatency
+        expr: histogram_quantile(0.95, rate(litellm_request_duration_seconds_bucket[5m])) > 60
+        for: 2m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: performance
+        annotations:
+          summary: "Very high latency on LiteLLM Gateway"
+          description: "95th percentile latency is {{ $value | printf \"%.2f\" }}s for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-very-high-latency"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Request Volume Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.requests
+    rules:
+      - alert: LiteLLMLowRequestVolume
+        expr: rate(litellm_request_count[5m]) < 0.5
+        for: 10m
+        labels:
+          severity: info
+          service: litellm-gateway
+          category: usage
+        annotations:
+          summary: "Low request volume on LiteLLM Gateway"
+          description: "Request rate is {{ $value | printf \"%.2f\" }} requests/second for the last 10 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-low-request-volume"
+
+      - alert: LiteLLMSuddenRequestSpike
+        expr: rate(litellm_request_count[5m]) > 100
+        for: 2m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: usage
+        annotations:
+          summary: "Sudden request spike on LiteLLM Gateway"
+          description: "Request rate is {{ $value | printf \"%.2f\" }} requests/second, which is unusually high."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-request-spike"
+
+      - alert: LiteLLMModelSpecificHighErrorRate
+        expr: rate(litellm_error_count{model=~".+"}[5m]) > 0.2
+        for: 3m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: model_errors
+        annotations:
+          summary: "High error rate for model {{ $labels.model }}"
+          description: "Model {{ $labels.model }} has error rate of {{ $value | printf \"%.2f\" }} errors/second for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-model-errors"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Cost and Budget Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.budgets
+    rules:
+      - alert: LiteLLMBudgetWarning
+        expr: litellm_spend_percentage >= 0.8
+        for: 0m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: budget
+        annotations:
+          summary: "LiteLLM budget warning"
+          description: "Current spend is {{ $value | printf \"%.1f\" }}% of the allocated budget."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-budget-warning"
+
+      - alert: LiteLLMBudgetCritical
+        expr: litellm_spend_percentage >= 0.9
+        for: 0m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: budget
+        annotations:
+          summary: "LiteLLM budget critical"
+          description: "Current spend is {{ $value | printf \"%.1f\" }}% of the allocated budget."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-budget-critical"
+
+      - alert: LiteLLMBudgetExhausted
+        expr: litellm_spend_percentage >= 1.0
+        for: 0m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: budget
+        annotations:
+          summary: "LiteLLM budget exhausted"
+          description: "Budget has been fully exhausted. Requests may be throttled or blocked."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-budget-exhausted"
+
+      - alert: LiteLLMHighCostPerRequest
+        expr: rate(litellm_cost_total[5m]) / rate(litellm_request_count[5m]) > 0.50
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: cost
+        annotations:
+          summary: "High cost per request on LiteLLM Gateway"
+          description: "Average cost per request is ${{ $value | printf \"%.4f\" }} for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-cost-per-request"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Token Usage Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.tokens
+    rules:
+      - alert: LiteLLMHighTokenUsage
+        expr: rate(litellm_tokens_total[5m]) > 1000000
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: tokens
+        annotations:
+          summary: "High token usage on LiteLLM Gateway"
+          description: "Token usage rate is {{ $value | printf \"%.0f\" }} tokens/second for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-token-usage"
+
+      - alert: LiteLLMModelHighTokenUsage
+        expr: rate(litellm_tokens_total{model=~".+"}[5m]) > 500000
+        for: 3m
+        labels:
+          severity: info
+          service: litellm-gateway
+          category: model_tokens
+        annotations:
+          summary: "High token usage for model {{ $labels.model }}"
+          description: "Model {{ $labels.model }} token usage rate is {{ $value | printf \"%.0f\" }} tokens/second for the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-model-token-usage"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Cache Performance Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.cache
+    rules:
+      - alert: LiteLLMLowCacheHitRate
+        expr: rate(litellm_cache_hits_total[5m]) / (rate(litellm_cache_hits_total[5m]) + rate(litellm_cache_misses_total[5m])) < 0.3
+        for: 10m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: cache
+        annotations:
+          summary: "Low cache hit rate on LiteLLM Gateway"
+          description: "Cache hit rate is {{ $value | printf \"%.2f\" }} for the last 10 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-low-cache-hit-rate"
+
+      - alert: LiteLLMCacheDown
+        expr: up{job="agentstack-redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: cache
+        annotations:
+          summary: "Redis cache is down"
+          description: "Redis cache instance is down, affecting LiteLLM performance."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-cache-down"
+
+      - alert: LiteLLMHighCacheMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: cache
+        annotations:
+          summary: "High Redis memory usage"
+          description: "Redis memory usage is {{ $value | printf \"%.1f\" }}% of maximum."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-cache-memory"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Database Performance Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.database
+    rules:
+      - alert: LiteLLMDatabaseDown
+        expr: up{job="agentstack-litellm-postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: database
+        annotations:
+          summary: "LiteLLM database is down"
+          description: "PostgreSQL database for LiteLLM is down."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-database-down"
+
+      - alert: LiteLLMDatabaseHighConnections
+        expr: pg_stat_activity_count > 400
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: database
+        annotations:
+          summary: "High database connection count"
+          description: "Database has {{ $value }} active connections."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-database-connections"
+
+      - alert: LiteLLMDatabaseSlowQueries
+        expr: rate(pg_stat_activity_max_tx_duration_seconds[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average query duration is {{ $value | printf \"%.2f\" }} seconds."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-database-slow-queries"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Model Provider Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.providers
+    rules:
+      - alert: LiteLLMProviderHighErrorRate
+        expr: rate(litellm_error_count{provider=~".+"}[5m]) > 0.2
+        for: 3m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: provider_errors
+        annotations:
+          summary: "High error rate for provider {{ $labels.provider }}"
+          description: "Provider {{ $labels.provider }} has error rate of {{ $value | printf \"%.2f\" }} errors/second."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-provider-errors"
+
+      - alert: LiteLLMProviderDown
+        expr: rate(litellm_request_count{provider=~".+"}[5m]) == 0 and litellm_request_count{provider=~".+"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: litellm-gateway
+          category: provider_health
+        annotations:
+          summary: "Provider {{ $labels.provider }} appears to be down"
+          description: "No successful requests to provider {{ $labels.provider }} in the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-provider-down"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Rate Limiting Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.ratelimiting
+    rules:
+      - alert: LiteLLMHighRateLimitHits
+        expr: rate(litellm_rate_limit_hits_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: rate_limiting
+        annotations:
+          summary: "High rate limit hits"
+          description: "Rate limit is being hit {{ $value | printf \"%.1f\" }} times per second."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-high-rate-limit-hits"
+
+      - alert: LiteLLMUserRateLimited
+        expr: increase(litellm_user_rate_limit_hits_total[5m]) > 50
+        for: 1m
+        labels:
+          severity: info
+          service: litellm-gateway
+          category: rate_limiting
+        annotations:
+          summary: "User {{ $labels.user }} is frequently rate limited"
+          description: "User {{ $labels.user }} hit rate limits {{ $value }} times in the last 5 minutes."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-user-rate-limited"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Load Balancing Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.loadbalancing
+    rules:
+      - alert: LiteLLMUnhealthyModelInstance
+        expr: litellm_model_healthy{model=~".+",instance=~".+"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: load_balancing
+        annotations:
+          summary: "Model instance {{ $labels.instance }} for {{ $labels.model }} is unhealthy"
+          description: "Model instance {{ $labels.instance }} for {{ $labels.model }} has been marked as unhealthy."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-unhealthy-model-instance"
+
+      - alert: LiteLLMLoadBalancingSkewed
+        expr: rate(litellm_model_request_count{model=~".+"}[5m]) / sum(rate(litellm_model_request_count{model=~"gpt-.*"}[5m])) > 0.8
+        for: 10m
+        labels:
+          severity: info
+          service: litellm-gateway
+          category: load_balancing
+        annotations:
+          summary: "Load balancing may be skewed for {{ $labels.model }}"
+          description: "Model {{ $labels.model }} is handling {{ $value | printf \"%.1f\" }}% of GPT requests."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-load-balancing-skewed"
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM Security Alerts
+  # ---------------------------------------------------------------------------
+  - name: litellm.gateway.security
+    rules:
+      - alert: LiteLLMHighFailedAuthAttempts
+        expr: rate(litellm_auth_failures_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "Authentication failures are occurring at {{ $value | printf \"%.1f\" }} per second."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-auth-failures"
+
+      - alert: LiteLLMSuspiciousUserActivity
+        expr: rate(litellm_request_count{user=~".+"}[5m]) > 100
+        for: 1m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: security
+        annotations:
+          summary: "Suspicious activity from user {{ $labels.user }}"
+          description: "User {{ $labels.user }} is making {{ $value | printf \"%.1f\" }} requests per second."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-suspicious-activity"
+
+      - alert: LiteLLMLargeRequestSize
+        expr: litellm_request_size_bytes > 10485760  # 10MB
+        for: 0m
+        labels:
+          severity: warning
+          service: litellm-gateway
+          category: security
+        annotations:
+          summary: "Large request size detected"
+          description: "Request of {{ $value | humanizeBytes }} detected from {{ $labels.user | default \"unknown\" }}."
+          runbook_url: "https://docs.agentstack.oss/runbooks/litellm-large-request"

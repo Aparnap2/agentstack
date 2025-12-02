@@ -1,0 +1,376 @@
+# =============================================================================
+# AgentStack OSS - Production PostgreSQL Service
+# Version: 1.0.0
+# Description: Container-by-container approach for PostgreSQL with production optimizations
+# Usage: docker-compose -f docker-compose.production-postgres.yml up -d
+# =============================================================================
+# Production Dashboard URLs:
+#   - PostgreSQL: localhost:5432 (internal only)
+#   - pgAdmin (if enabled): http://localhost:5050
+#   - Prometheus metrics: http://localhost:9187
+# =============================================================================
+
+version: '3.8'
+
+# -----------------------------------------------------------------------------
+# NETWORKS
+# -----------------------------------------------------------------------------
+networks:
+  agentstack-production-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+  monitoring-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+
+# -----------------------------------------------------------------------------
+# VOLUMES (Production-grade with backup strategies)
+# -----------------------------------------------------------------------------
+volumes:
+  # Main PostgreSQL data volume
+  postgres_production_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/postgres
+
+  # WAL archive volume for point-in-time recovery
+  postgres_wal_archive:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/backup/postgres/wal
+
+  # Backup volume
+  postgres_backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/backup/postgres/backups
+
+  # SSL certificates volume (mounted from host)
+  postgres_ssl:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/ssl/postgres
+
+  # Log volume for centralized logging
+  postgres_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/logs/postgres
+
+# -----------------------------------------------------------------------------
+# SECRETS (Production secrets management)
+# -----------------------------------------------------------------------------
+secrets:
+  postgres_password:
+    file: /opt/agentstack/secrets/postgres_password.txt
+  postgres_replication_password:
+    file: /opt/agentstack/secrets/postgres_replication_password.txt
+
+# -----------------------------------------------------------------------------
+# SERVICES
+# -----------------------------------------------------------------------------
+services:
+  # ---------------------------------------------------------------------------
+  # 1. POSTGRESQL - Production Database with pgvector
+  # ---------------------------------------------------------------------------
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+      args:
+        PG_VERSION: "17"
+        PGVECTOR_VERSION: "0.8.0"
+        BUILD_DATE: "2024-12-01T00:00:00Z"
+    image: agentstack-postgres:production-v1.0.0
+    container_name: agentstack-postgres-prod
+    restart: unless-stopped
+
+    # Environment variables (use .env file for production)
+    environment:
+      # PostgreSQL Configuration
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-agentstack}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C --data-checksums"
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+
+      # Application Configuration
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_REPLICATION_PASSWORD_FILE: /run/secrets/postgres_replication_password
+
+      # Vector Workload Optimization
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-256MB}
+      POSTGRES_WORK_MEM: ${POSTGRES_WORK_MEM:-16MB}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
+
+      # Performance Tuning
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-200}
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: ${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      POSTGRES_WAL_BUFFERS: ${POSTGRES_WAL_BUFFERS:-16MB}
+
+      # Logging and Monitoring
+      POSTGRES_LOG_MIN_DURATION_STATEMENT: ${POSTGRES_LOG_MIN_DURATION_STATEMENT:-1000}
+      POSTGRES_LOG_STATEMENT: ${POSTGRES_LOG_STATEMENT:-ddl}
+      POSTGRES_LOG_CHECKPOINTS: "on"
+      POSTGRES_LOG_CONNECTIONS: "on"
+      POSTGRES_LOG_DISCONNECTIONS: "on"
+
+      # SSL Configuration
+      POSTGRES_SSL: "on"
+      POSTGRES_SSL_CERT_FILE: "/opt/agentstack/postgres/ssl/server.crt"
+      POSTGRES_SSL_KEY_FILE: "/opt/agentstack/postgres/ssl/server.key"
+      POSTGRES_SSL_CA_FILE: "/opt/agentstack/postgres/ssl/ca.crt"
+
+      # Timezone and Localization
+      TZ: "UTC"
+      PGTZ: "UTC"
+
+    # Port configuration (internal only in production)
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    # Volume mounts for production persistence
+    volumes:
+      # Data and WAL
+      - postgres_production_data:/var/lib/postgresql/data
+      - postgres_wal_archive:/opt/agentstack/postgres/wal_archive
+      - postgres_backups:/opt/agentstack/postgres/backups
+
+      # Configuration and SSL
+      - ./config/postgresql:/opt/agentstack/postgres/config:ro
+      - postgres_ssl:/opt/agentstack/postgres/ssl:ro
+
+      # Logs
+      - postgres_logs:/var/lib/postgresql/data/log
+      - ./logs:/var/log/agentstack/postgres
+
+      # Initialization scripts
+      - ./init:/docker-entrypoint-initdb.d:ro
+
+      # Runtime scripts
+      - ./scripts:/opt/agentstack/postgres/scripts:ro
+
+      # Temporary directories
+      - /tmp:/tmp
+
+      # System optimization
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+
+    # Secrets for secure credential management
+    secrets:
+      - postgres_password
+      - postgres_replication_password
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "/opt/agentstack/postgres/health-check.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits (adjust based on production environment)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Required for PostgreSQL
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+
+    # User and group configuration
+    user: "999:999"
+
+    # Network configuration
+    networks:
+      agentstack-production-network:
+        ipv4_address: 172.20.0.10
+      monitoring-network:
+        ipv4_address: 172.21.0.10
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=postgres,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=postgres"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "traefik.enable=false"  # Internal service only
+
+    # Dependencies
+    depends_on: {}
+
+  # ---------------------------------------------------------------------------
+  # 2. POSTGRES EXPORTER - Prometheus Metrics (Optional)
+  # ---------------------------------------------------------------------------
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.13.0
+    container_name: agentstack-postgres-exporter
+    restart: unless-stopped
+
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:$(cat /run/secrets/postgres_password)@postgres:5432/${POSTGRES_DB:-agentstack}?sslmode=disable"
+      PG_EXPORTER_DISABLE_DEFAULT_METRICS: "false"
+      PG_EXPORTER_EXCLUDE_DATABASES: "template0,template1"
+      PG_EXPORTER_CONSTANT_LABELS: "service=postgres,environment=production"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+      PG_EXPORTER_INCLUDE_DBS: "${POSTGRES_DB:-agentstack}"
+      PG_EXPORTER_DISCOVERY_INTERVAL: "30s"
+
+    # Secrets for secure connection
+    secrets:
+      - postgres_password
+
+    # Port for metrics
+    ports:
+      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
+
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9187/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    user: "65534:65534"
+
+    # Networks
+    networks:
+      agentstack-production-network:
+        ipv4_address: 172.20.0.11
+      monitoring-network:
+        ipv4_address: 172.21.0.11
+
+    # Dependencies
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Labels
+    labels:
+      - "com.agentstack.service=postgres-exporter"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus scrape=true"
+      - "prometheus port=9187"
+      - "prometheus path=/metrics"
+
+  # ---------------------------------------------------------------------------
+  # 3. PGADMIN - Database Management UI (Optional, for development)
+  # ---------------------------------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: agentstack-pgadmin-prod
+    restart: unless-stopped
+
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@agentstack.local}
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/postgres_password
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: "INFO"
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"
+
+    # Secrets
+    secrets:
+      - postgres_password
+
+    # Port for web interface
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+
+    # Volume mounts
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./config/pgadmin/servers.json:/pgadmin4/servers.json:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Networks
+    networks:
+      agentstack-production-network:
+        ipv4_address: 172.20.0.12
+
+    # Dependencies
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Labels
+    labels:
+      - "com.agentstack.service=pgadmin"
+      - "com.agentstack.environment=production"
+
+# Additional volumes for pgAdmin
+volumes:
+  pgadmin_data:
+    driver: local

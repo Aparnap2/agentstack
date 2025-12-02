@@ -1,0 +1,546 @@
+# =============================================================================
+# AgentStack OSS - OpenTelemetry Collector Configuration
+# Version: 1.0.0
+# Description: Production-grade OpenTelemetry collector for LLM tracing
+# =============================================================================
+# This collector is optimized for Phoenix Arize integration and high-volume
+# LLM tracing workloads with comprehensive telemetry processing
+# =============================================================================
+
+receivers:
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Protocol (OTLP) Receivers
+  # ---------------------------------------------------------------------------
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # GRPC configuration for high-throughput LLM tracing
+        max_recv_msg_size: 4194304  # 4MB
+        max_concurrent_streams: 16
+        read_buffer_size: 524288   # 512KB
+        write_buffer_size: 524288   # 512KB
+
+      http:
+        endpoint: 0.0.0.0:4318
+        # HTTP configuration for web-based telemetry
+        cors:
+          allowed_origins:
+            - "http://localhost:3000"
+            - "http://localhost:3001"
+            - "http://localhost:6006"
+          allowed_headers: ["*"]
+          max_age: 7200
+        # HTTP settings for high-volume requests
+        max_request_body_size: 4194304  # 4MB
+        read_header_timeout: 5s
+        read_timeout: 30s
+        write_timeout: 30s
+        idle_timeout: 60s
+
+  # ---------------------------------------------------------------------------
+  # Prometheus Metrics Receiver
+  # ---------------------------------------------------------------------------
+  prometheus:
+    config:
+      scrape_configs:
+        # Phoenix application metrics
+        - job_name: 'phoenix'
+          static_configs:
+            - targets: ['phoenix:6007']
+          metrics_path: /metrics
+          scrape_interval: 15s
+          scrape_timeout: 10s
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'phoenix_.*'
+              action: keep
+
+        # OpenTelemetry Collector metrics
+        - job_name: 'otel-collector'
+          static_configs:
+            - targets: ['localhost:8889']
+          metrics_path: /metrics
+          scrape_interval: 15s
+          scrape_timeout: 10s
+
+        # PostgreSQL metrics
+        - job_name: 'phoenix-postgres'
+          static_configs:
+            - targets: ['phoenix-postgres:9187']
+          metrics_path: /metrics
+          scrape_interval: 30s
+          scrape_timeout: 10s
+
+        # AgentStack application metrics
+        - job_name: 'agentstack-applications'
+          static_configs:
+            - targets: ['app:8080', 'worker:8080']
+          metrics_path: /metrics
+          scrape_interval: 15s
+          scrape_timeout: 10s
+
+  # ---------------------------------------------------------------------------
+  # Jaeger Receiver (for compatibility)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:14250
+      thrift_compact:
+        endpoint: 0.0.0.0:6831
+      thrift_binary:
+        endpoint: 0.0.0.0:6832
+      thrift_http:
+        endpoint: 0.0.0.0:14268
+
+  # ---------------------------------------------------------------------------
+  # Zipkin Receiver (for compatibility)
+  # ---------------------------------------------------------------------------
+  zipkin:
+    endpoint: 0.0.0.0:9411
+
+  # ---------------------------------------------------------------------------
+  # Host Metrics Receiver (System Observability)
+  # ---------------------------------------------------------------------------
+  hostmetrics:
+    scrapers:
+      - cpu
+      - disk
+      - load
+      - filesystem
+      - memory
+      - network
+      - processes
+      - process
+    collection_interval: 30s
+
+  # ---------------------------------------------------------------------------
+  # StatsD Receiver (for legacy applications)
+  # ---------------------------------------------------------------------------
+  statsd:
+    endpoint: 0.0.0.0:8125
+    transport: udp
+    aggregation_interval: 10s
+    enable_metric_type: true
+    timer_histogram_mapping:
+      - histogram: "phoenix_request_duration"
+        timer: "phoenix.request.duration"
+        bucket_bounds: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000]
+
+processors:
+  # ---------------------------------------------------------------------------
+  # Batch Processor - Optimized for high-volume LLM tracing
+  # ---------------------------------------------------------------------------
+  batch:
+    # Batch configuration for LLM traces
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+    # LLM-specific batch configurations
+    metadata_keys:
+      - "llm.model"
+      - "llm.provider"
+      - "llm.temperature"
+      - "llm.max_tokens"
+      - "user.id"
+      - "session.id"
+      - "trace.type"
+
+    # Resource attributes to add
+    resource:
+      add: true
+      attributes:
+        - key: "service.instance.id"
+          value: "${HOSTNAME}"
+          action: upsert
+        - key: "deployment.environment"
+          value: "production"
+          action: upsert
+        - key: "service.version"
+          value: "v1.0.0"
+          action: upsert
+
+  # ---------------------------------------------------------------------------
+  # Memory Limiter - Prevent memory exhaustion
+  # ---------------------------------------------------------------------------
+  memory_limiter:
+    limit_mib: 2048  # 2GB limit
+    spike_limit_mib: 512  # 512MB spike limit
+    check_interval: 5s
+
+  # ---------------------------------------------------------------------------
+  # Resource Processor - Enrich telemetry with LLM context
+  # ---------------------------------------------------------------------------
+  resource:
+    attributes:
+      # LLM-specific resource attributes
+      - key: "telemetry.sdk.name"
+        value: "opentelemetry"
+        action: upsert
+      - key: "telemetry.sdk.language"
+        value: "python"
+        action: upsert
+      - key: "telemetry.sdk.version"
+        value: "1.21.0"
+        action: upsert
+      - key: "service.namespace"
+        value: "agentstack"
+        action: upsert
+      - key: "service.instance.id"
+        value: "${HOSTNAME}"
+        action: upsert
+
+  # ---------------------------------------------------------------------------
+  # Attributes Processor - Clean and normalize LLM trace attributes
+  # ---------------------------------------------------------------------------
+  attributes:
+    actions:
+      # Normalize LLM model names
+      - key: "llm.model"
+        action: update
+        value: "gpt-4-turbo"
+        regex: "gpt-4-turbo.*"
+
+      # Normalize provider names
+      - key: "llm.provider"
+        action: update
+        value: "openai"
+        regex: "openai.*"
+
+      # Sanitize sensitive attributes
+      - key: "llm.api_key"
+        action: delete
+      - key: "user.token"
+        action: delete
+      - key: "session.token"
+        action: delete
+
+      # Add trace type classification
+      - key: "trace.type"
+        action: upsert
+        value: "llm"
+
+      # Add performance classification
+      - key: "performance.classification"
+        action: upsert
+        value: "production"
+
+  # ---------------------------------------------------------------------------
+  # Transform Processor - Advanced trace processing for LLM workloads
+  # ---------------------------------------------------------------------------
+  transform:
+    trace_statements:
+      - context: span
+        statements:
+          # Extract token usage from LLM responses
+          - set(attributes["llm.token_usage.total"], span.attributes["llm.response.usage.total_tokens"])
+          - set(attributes["llm.token_usage.prompt"], span.attributes["llm.response.usage.prompt_tokens"])
+          - set(attributes["llm.token_usage.completion"], span.attributes["llm.response.usage.completion_tokens"])
+
+          # Calculate response time metrics
+          - set(attributes["llm.response_time_ms"], duration(span.end_time, span.start_time))
+
+          # Classify trace by model type
+          - set(attributes["llm.model_type"], "chat_completions") where attributes["llm.model"] matches "gpt-.*"
+          - set(attributes["llm.model_type"], "embeddings") where attributes["llm.model"] matches "text-embedding-.*"
+          - set(attributes["llm.model_type"], "image_generation") where attributes["llm.model"] matches "dall-e.*"
+
+          # Add error classification
+          - set(attributes["error.type"], "rate_limit") where attributes["error.code"] == "rate_limit_exceeded"
+          - set(attributes["error.type"], "timeout") where attributes["error.code"] == "timeout"
+          - set(attributes["error.type"], "content_filter") where attributes["error.code"] == "content_filter"
+
+          # Add cost estimation (simplified)
+          - set(attributes["llm.estimated_cost_usd"], (attributes["llm.token_usage.total"] * 0.002) / 1000) where attributes["llm.model"] == "gpt-4"
+          - set(attributes["llm.estimated_cost_usd"], (attributes["llm.token_usage.total"] * 0.0005) / 1000) where attributes["llm.model"] == "gpt-3.5-turbo"
+
+  # ---------------------------------------------------------------------------
+  # Filter Processor - Filter out noise and optimize storage
+  # ---------------------------------------------------------------------------
+  filter:
+    traces:
+      # Filter out health checks and system traces
+      - include:
+          match_type: strict
+          attributes:
+            - key: "http.target"
+              value: "/health"
+          invert_match: true
+      - include:
+          match_type: strict
+          attributes:
+            - key: "http.target"
+              value: "/metrics"
+          invert_match: true
+
+      # Include only LLM-related traces
+      - include:
+          match_type: regexp
+          attributes:
+            - key: "llm.model"
+              value: ".*"
+            - key: "service.name"
+              value: ".*phoenix.*"
+              # OR
+            - key: "service.name"
+              value: ".*litellm.*"
+              # OR
+            - key: "service.name"
+              value: ".*agentstack.*"
+
+    metrics:
+      # Include only relevant metrics
+      - include:
+          match_type: regexp
+          metric_names:
+            - "phoenix.*"
+            - "llm.*"
+            - "otel.*"
+            - "process.*"
+            - "runtime.*"
+
+  # ---------------------------------------------------------------------------
+  # Sampling Processor - Intelligent sampling for high-volume workloads
+  # ---------------------------------------------------------------------------
+  probabilistic_sampler:
+    sampling_percentage: 100  # Sample all traces in production initially
+
+    # LLM-specific sampling rules
+    rules:
+      # Always sample error traces
+      - name: "error_traces"
+        type: "string"
+        attribute: "error.type"
+        sampling_percentage: 100
+
+      # Always sample high-cost operations
+      - name: "high_cost_operations"
+        type: "double"
+        attribute: "llm.estimated_cost_usd"
+        comparison_operator: ">"
+        value: 0.01  # $0.01 USD
+        sampling_percentage: 100
+
+      # Sample slow traces
+      - name: "slow_traces"
+        type: "double"
+        attribute: "llm.response_time_ms"
+        comparison_operator: ">"
+        value: 5000  # 5 seconds
+        sampling_percentage: 100
+
+      # Sample user sessions with probability
+      - name: "user_sessions"
+        type: "string"
+        attribute: "user.id"
+        sampling_percentage: 50
+
+extensions:
+  # ---------------------------------------------------------------------------
+  # Health Check Extension
+  # ---------------------------------------------------------------------------
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: "/health"
+    response_body: "OK"
+    headers:
+      - key: "Cache-Control"
+        value: "no-cache"
+
+  # ---------------------------------------------------------------------------
+  # Performance Profiling Extensions
+  # ---------------------------------------------------------------------------
+  pprof:
+    endpoint: 0.0.0.0:1777
+    block_profile_fraction: 1
+    mutex_profile_fraction: 1
+
+  # ---------------------------------------------------------------------------
+  # Debugging Extension
+  # ---------------------------------------------------------------------------
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+  # ---------------------------------------------------------------------------
+  # Resource Detection
+  # ---------------------------------------------------------------------------
+  resource:
+    detectors:
+      - "system"
+      - "env"
+      - "ec2"
+      - "gcp"
+      - "azure"
+
+exporters:
+  # ---------------------------------------------------------------------------
+  # Phoenix Exporter - Send traces to Phoenix
+  # ---------------------------------------------------------------------------
+  otlp:
+    endpoint: "http://phoenix:4317"
+    tls:
+      insecure: true
+    # Retry configuration for reliability
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+    # Queue configuration
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+      max_queue_size: 10000
+
+    # Timeout configuration
+    timeout: 30s
+
+    # Headers for Phoenix authentication
+    headers:
+      "Authorization": "Bearer ${PHOENIX_API_KEY}"
+      "Content-Type": "application/x-protobuf"
+
+  # ---------------------------------------------------------------------------
+  # Prometheus Exporter - Export metrics for Prometheus scraping
+  # ---------------------------------------------------------------------------
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "agentstack_phoenix"
+    const_labels:
+      environment: "production"
+      service: "otel-collector"
+
+    # Metrics configuration
+    send_timestamps: true
+    metric_expiration: 180m
+    enable_open_metrics: true
+    add_metric_suffixes: true
+
+    # Resource attributes as labels
+    resource_to_telemetry_conversion:
+      enabled: true
+      include_resource_labels: true
+
+  # ---------------------------------------------------------------------------
+  # File Exporter - Backup traces to file (for debugging)
+  # ---------------------------------------------------------------------------
+  file:
+    path: "/etc/otelcol/traces.jsonl"
+    format: "json"
+
+    # Rotation configuration
+    rotation:
+      max_megabytes: 100
+      max_files: 10
+
+    # Compression
+    compression: "gzip"
+
+  # ---------------------------------------------------------------------------
+  # Loki Exporter - Export logs to Loki (if available)
+  # ---------------------------------------------------------------------------
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+    tls:
+      insecure: true
+
+    # Labels
+    labels:
+      service: "otel-collector"
+      environment: "production"
+      component: "observability"
+
+    # Retry configuration
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+
+service:
+  # ---------------------------------------------------------------------------
+  # Extensions Configuration
+  # ---------------------------------------------------------------------------
+  extensions:
+    - health_check
+    - pprof
+    - zpages
+    - resource
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Configuration
+  # ---------------------------------------------------------------------------
+  pipelines:
+    # Traces Pipeline - LLM Trace Processing
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [memory_limiter, resource, attributes, transform, filter, probabilistic_sampler, batch]
+      exporters: [otlp, file]  # Send to Phoenix and backup to file
+
+    # Metrics Pipeline - System and Application Metrics
+    metrics:
+      receivers: [otlp, prometheus, hostmetrics]
+      processors: [memory_limiter, resource, attributes, batch]
+      exporters: [prometheus]  # Export to Prometheus
+
+    # Logs Pipeline - System and Application Logs
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, attributes, batch]
+      exporters: [loki]  # Export to Loki if available
+
+  # ---------------------------------------------------------------------------
+  # Telemetry Configuration
+  # ---------------------------------------------------------------------------
+  telemetry:
+    logs:
+      level: "info"
+      development: false
+      encoding: "json"
+
+    metrics:
+      address: 0.0.0.0:8888
+      level: "detailed"
+
+    # Resource attributes for the collector itself
+    resource:
+      attributes:
+        - key: "service.name"
+          value: "agentstack-otel-collector"
+        - key: "service.version"
+          value: "v1.0.0"
+        - key: "deployment.environment"
+          value: "production"
+        - key: "service.instance.id"
+          value: "${HOSTNAME}"
+        - key: "host.name"
+          value: "${HOSTNAME}"
+        - key: "os.type"
+          value: "linux"
+
+  # ---------------------------------------------------------------------------
+  # Performance Configuration
+  # ---------------------------------------------------------------------------
+  # Graceful shutdown configuration
+  graceful_shutdown:
+    timeout: 30s
+
+  # Parallelism configuration
+  async_error_queue_size: 1000
+
+  # limiter configuration
+  limiter:
+    check_interval: 1s
+    timeout: 30s
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+# This configuration provides a comprehensive, production-ready OpenTelemetry
+# collector optimized for LLM observability with Phoenix Arize integration.
+# It handles high-volume tracing, intelligent sampling, and provides rich
+# contextual information for LLM operations.
+# =============================================================================

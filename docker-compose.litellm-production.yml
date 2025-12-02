@@ -1,0 +1,735 @@
+# =============================================================================
+# AgentStack OSS - Production LiteLLM AI Gateway
+# Version: 1.0.0
+# Description: Enterprise-grade AI routing, load balancing, and observability
+# Usage: docker-compose -f docker-compose.litellm-production.yml up -d
+# =============================================================================
+# Production Dashboard URLs:
+#   - LiteLLM Gateway: http://localhost:4000
+#   - LiteLLM Health: http://localhost:4000/health
+#   - LiteLLM Metrics: http://localhost:4000/metrics
+#   - LiteLLM Models: http://localhost:4000/v1/models
+#   - Phoenix UI: http://localhost:6006
+#   - Grafana Dashboard: http://localhost:3001
+#   - Prometheus Metrics: http://localhost:9090
+# =============================================================================
+
+version: '3.8'
+
+# -----------------------------------------------------------------------------
+# NETWORKS - Production-Grade Network Isolation
+# -----------------------------------------------------------------------------
+networks:
+  # LiteLLM network for AI services
+  litellm-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+          gateway: 172.25.0.1
+
+  # Phoenix observability network (shared with main stack)
+  phoenix-network:
+    external: true
+
+  # Application network for internal services
+  application-network:
+    external: true
+
+  # Monitoring network for metrics
+  monitoring-network:
+    external: true
+
+# -----------------------------------------------------------------------------
+# VOLUMES - Production-Grade Data Persistence
+# -----------------------------------------------------------------------------
+volumes:
+  # LiteLLM PostgreSQL database
+  litellm_postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/litellm/postgres
+
+  # LiteLLM application data and logs
+  litellm_app_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/litellm/app
+
+  # WAL archive for LiteLLM PostgreSQL
+  litellm_wal_archive:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/backup/litellm/wal
+
+  # Redis data for caching and load balancing
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/data/redis
+
+  # Configuration volumes
+  litellm_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/config/litellm
+
+  # Log volumes
+  litellm_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/logs/litellm
+
+  # SSL certificates for secure communication
+  litellm_ssl:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/agentstack/ssl/litellm
+
+# -----------------------------------------------------------------------------
+# SECRETS - Production Secrets Management
+# -----------------------------------------------------------------------------
+secrets:
+  # LiteLLM PostgreSQL password
+  litellm_postgres_password:
+    file: /opt/agentstack/secrets/litellm_postgres_password.txt
+
+  # LiteLLM master key for admin operations
+  litellm_master_key:
+    file: /opt/agentstack/secrets/litellm_master_key.txt
+
+  # LiteLLM API key for service authentication
+  litellm_api_key:
+    file: /opt/agentstack/secrets/litellm_api_key.txt
+
+  # Redis password for caching
+  redis_password:
+    file: /opt/agentstack/secrets/redis_password.txt
+
+  # SSL/TLS certificates
+  litellm_ssl_cert:
+    file: /opt/agentstack/secrets/litellm_ssl_cert.pem
+
+  litellm_ssl_key:
+    file: /opt/agentstack/secrets/litellm_ssl_key.pem
+
+  # Provider API keys
+  openai_api_key:
+    file: /opt/agentstack/secrets/openai_api_key.txt
+
+  anthropic_api_key:
+    file: /opt/agentstack/secrets/anthropic_api_key.txt
+
+  google_api_key:
+    file: /opt/agentstack/secrets/google_api_key.txt
+
+  cohere_api_key:
+    file: /opt/agentstack/secrets/cohere_api_key.txt
+
+  huggingface_api_key:
+    file: /opt/agentstack/secrets/huggingface_api_key.txt
+
+  # Azure OpenAI credentials
+  azure_openai_api_key_1:
+    file: /opt/agentstack/secrets/azure_openai_api_key_1.txt
+
+  azure_openai_api_key_2:
+    file: /opt/agentstack/secrets/azure_openai_api_key_2.txt
+
+  azure_openai_api_key_3:
+    file: /opt/agentstack/secrets/azure_openai_api_key_3.txt
+
+  # Budget and monitoring
+  budget_alert_webhook:
+    file: /opt/agentstack/secrets/budget_alert_webhook.txt
+
+  slack_webhook_url:
+    file: /opt/agentstack/secrets/slack_webhook_url.txt
+
+# -----------------------------------------------------------------------------
+# SERVICES - Production-Grade LiteLLM AI Gateway Stack
+# -----------------------------------------------------------------------------
+services:
+  # ---------------------------------------------------------------------------
+  # 1. LITELLM POSTGRESQL - Dedicated Database for LiteLLM
+  # ---------------------------------------------------------------------------
+  litellm-postgres:
+    image: pgvector/pgvector:pg17-0.8.0
+    container_name: agentstack-litellm-postgres
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL Configuration
+      POSTGRES_USER: ${LITELLM_POSTGRES_USER:-litellm}
+      POSTGRES_DB: ${LITELLM_POSTGRES_DB:-litellm}
+      POSTGRES_PASSWORD_FILE: /run/secrets/litellm_postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C --data-checksums"
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+
+      # LiteLLM Database Optimizations
+      POSTGRES_SHARED_BUFFERS: ${LITELLM_POSTGRES_SHARED_BUFFERS:-1GB}
+      POSTGRES_WORK_MEM: ${LITELLM_POSTGRES_WORK_MEM:-64MB}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${LITELLM_POSTGRES_MAINTENANCE_WORK_MEM:-512MB}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${LITELLM_POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: 0.9
+      POSTGRES_WAL_BUFFERS: 64MB
+      POSTGRES_MAX_WAL_SIZE: 4GB
+      POSTGRES_MIN_WAL_SIZE: 320MB
+
+      # Connection Configuration
+      POSTGRES_MAX_CONNECTIONS: ${LITELLM_POSTGRES_MAX_CONNECTIONS:-500}
+      POSTGRES_SUPERUSER_RESERVED_CONNECTIONS: 10
+
+      # Logging Configuration
+      POSTGRES_LOG_MIN_DURATION_STATEMENT: 200
+      POSTGRES_LOG_STATEMENT: "ddl"
+      POSTGRES_LOG_CHECKPOINTS: "on"
+      POSTGRES_LOG_CONNECTIONS: "on"
+      POSTGRES_LOG_DISCONNECTIONS: "on"
+      POSTGRES_LOG_LOCK_WAITS: "on"
+      POSTGRES_LOG_TEMP_FILES: 0
+
+      # SSL Configuration
+      POSTGRES_SSL: "on"
+      POSTGRES_SSL_CERT_FILE: "/opt/agentstack/litellm/ssl/server.crt"
+      POSTGRES_SSL_KEY_FILE: "/opt/agentstack/litellm/ssl/server.key"
+      POSTGRES_SSL_CA_FILE: "/opt/agentstack/litellm/ssl/ca.crt"
+
+      # Timezone Configuration
+      TZ: "UTC"
+      PGTZ: "UTC"
+
+      # LiteLLM-specific extensions
+      POSTGRES_EXTENSIONS: "vector,uuid-ossp,pg_trgm,btree_gin,pg_stat_statements,citext,pgcrypto,pg_stat_kcache,pg_partman"
+
+    # Port configuration (internal only for production)
+    ports:
+      - "${LITELLM_POSTGRES_PORT:-5434}:5432"
+
+    # Volume mounts for production persistence
+    volumes:
+      - litellm_postgres_data:/var/lib/postgresql/data
+      - litellm_wal_archive:/opt/agentstack/litellm/wal_archive
+      - litellm_ssl:/opt/agentstack/litellm/ssl:ro
+      - litellm_logs:/var/log/agentstack/litellm
+      - ./config/litellm/postgresql:/opt/agentstack/litellm/config:ro
+      - ./init/litellm:/docker-entrypoint-initdb.d:ro
+      - ./scripts/litellm:/opt/agentstack/litellm/scripts:ro
+
+    # Secrets for secure credential management
+    secrets:
+      - litellm_postgres_password
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LITELLM_POSTGRES_USER:-litellm} -d ${LITELLM_POSTGRES_DB:-litellm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    # Resource limits optimized for LiteLLM workloads
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 6G
+        reservations:
+          cpus: '2.0'
+          memory: 3G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+        window: 120s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+
+    # User and group configuration
+    user: "999:999"
+
+    # Network configuration
+    networks:
+      litellm-network:
+        ipv4_address: 172.25.0.10
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+        labels: "service=litellm-postgres,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=litellm-postgres"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=9187"
+      - "prometheus.path=/metrics"
+
+  # ---------------------------------------------------------------------------
+  # 2. REDIS - Caching and Load Balancing
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: agentstack-redis
+    restart: unless-stopped
+
+    command: >
+      redis-server
+      --requirepass $(cat /run/secrets/redis_password)
+      --maxmemory ${REDIS_MAX_MEMORY:-2gb}
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --appendonly yes
+      --appendfsync everysec
+      --tcp-keepalive 60
+      --timeout 0
+      --databases 16
+      --maxclients 10000
+
+    environment:
+      # Redis Configuration
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      REDIS_MAXMEMORY: ${REDIS_MAX_MEMORY:-2gb}
+      REDIS_MAXMEMORY_POLICY: allkeys-lru
+      REDIS_SAVE_INTERVAL: "900 1 300 10 60 10000"
+      REDIS_APPENDONLY: "yes"
+      REDIS_APPENDFSYNC: "everysec"
+      REDIS_TCP_KEEPLIVE: 60
+      REDIS_TIMEOUT: 0
+      REDIS_DATABASES: 16
+      REDIS_MAXCLIENTS: 10000
+
+      # Persistence Configuration
+      REDIS_DIR: /data
+      REDIS_DBFILENAME: dump.rdb
+      REDIS_APPENDFILENAME: appendonly.aof
+
+      # Performance Configuration
+      REDIS_IO_THREADS: 4
+      REDIS_IO_THREADS_DO_READS: "yes"
+      REDIS_PROTECTED_MODE: "no"
+      REDIS_TCP_BACKLOG: 511
+
+      # Timezone Configuration
+      TZ: "UTC"
+
+    # Port configuration
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+    # Volume mounts for data persistence
+    volumes:
+      - redis_data:/data
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./logs/redis:/var/log/redis
+
+    # Secrets for secure credential management
+    secrets:
+      - redis_password
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+        window: 120s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+
+    # User and group configuration
+    user: "999:999"
+
+    # Network configuration
+    networks:
+      litellm-network:
+        ipv4_address: 172.25.0.20
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service=redis,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=redis"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=9121"
+
+  # ---------------------------------------------------------------------------
+  # 3. LITELLM GATEWAY - Main AI Gateway Service
+  # ---------------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm-database:main-stable
+    container_name: agentstack-litellm
+    restart: unless-stopped
+
+    environment:
+      # LiteLLM Core Configuration
+      LITELLM_PORT: ${LITELLM_PORT:-4000}
+      LITELLM_NUM_WORKERS: ${LITELLM_NUM_WORKERS:-8}
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+      LITELLM_API_KEY_FILE: /run/secrets/litellm_api_key
+
+      # Database Configuration
+      DATABASE_URL: "postgresql://${LITELLM_POSTGRES_USER:-litellm}:$(cat /run/secrets/litellm_postgres_password)@litellm-postgres:5432/${LITELLM_POSTGRES_DB:-litellm}?sslmode=prefer"
+
+      # Redis Configuration for Caching and Load Balancing
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: $(cat /run/secrets/redis_password)
+      REDIS_DB: 0
+      REDIS_SSL: "false"
+
+      # Performance Configuration
+      LITELLM_NUM_RETRIES: 3
+      LITELLM_REQUEST_TIMEOUT: 60
+      LITELLM_ALLOWED_FAILS: 3
+      LITELLM_MAX_PARALLEL_REQUESTS: 100
+      LITELLM_MAX_REQUESTS_BEFORE_RESTART: ${LITELLM_MAX_REQUESTS_BEFORE_RESTART:-10000}
+      LITELLM_KEEPALIVE_TIMEOUT: ${LITELLM_KEEPALIVE_TIMEOUT:-75}
+
+      # Budget and Cost Management
+      LITELLM_BUDGET: ${LITELLM_BUDGET:-10000.0}
+      LITELLM_BUDGET_CURRENCY: USD
+      LITELLM_BUDGET_DURATION: 30d
+      LITELLM_BUDGET_ALERT_THRESHOLD: 0.8
+      LITELLM_COST_TRACKING: "true"
+      LITELLM_LOCAL_COST_CACHE: redis
+      LITELLM_LOCAL_MODEL_COST_MAP: "true"
+
+      # Caching Configuration
+      LITELLM_CACHE: "true"
+      LITELLM_CACHE_TYPE: redis
+      LITELLM_CACHE_REDIS_URL: "redis://:$(cat /run/secrets/redis_password)@redis:6379/1"
+      LITELLM_CACHE_TTL: 3600
+      LITELLM_CACHE_MAX_REQUESTS: 10000
+      LITELLM_CACHE_MAX_TOKENS: 1000000
+
+      # Security Configuration
+      LITELLM_REQUIRE_AUTH_HEADER: "true"
+      LITELLM_AUTH_REQUIRED: "true"
+      LITELLM_CORS_ENABLED: "true"
+      LITELLM_CORS_ORIGINS: ${LITELLM_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:6006}
+
+      # OpenTelemetry Configuration
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_RESOURCE_ATTRIBUTES: "service.name=agentstack-litellm,service.version=v1.0.0,deployment.environment=production"
+      OTEL_SERVICE_NAME: agentstack-litellm
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer $(cat /run/secrets/phoenix_api_key)"
+
+      # Prometheus Metrics Configuration
+      PROMETHEUS_ENABLED: "true"
+      PROMETHEUS_PORT: 8000
+      PROMETHEUS_NAMESPACE: litellm
+      PROMETHEUS_SUBSYSTEM: agentstack
+
+      # Logging Configuration
+      LITELLM_LOG: ${LITELLM_LOG_LEVEL:-INFO}
+      LITELLM_LOG_FORMAT: json
+      LITELLM_ACCESS_LOG: "true"
+      LITELLM_JSON_LOGS: "true"
+
+      # SSL Configuration
+      LITELLM_SSL: ${LITELLM_SSL_ENABLED:-true}
+      LITELLM_SSL_CERT_PATH: /opt/agentstack/litellm/ssl/server.crt
+      LITELLM_SSL_KEY_PATH: /opt/agentstack/litellm/ssl/server.key
+
+      # Provider API Keys (from secrets)
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
+      GOOGLE_API_KEY_FILE: /run/secrets/google_api_key
+      COHERE_API_KEY_FILE: /run/secrets/cohere_api_key
+      HUGGINGFACE_API_KEY_FILE: /run/secrets/huggingface_api_key
+
+      # Azure OpenAI Configuration
+      AZURE_OPENAI_API_KEY_1_FILE: /run/secrets/azure_openai_api_key_1
+      AZURE_OPENAI_API_KEY_2_FILE: /run/secrets/azure_openai_api_key_2
+      AZURE_OPENAI_API_KEY_3_FILE: /run/secrets/azure_openai_api_key_3
+      AZURE_OPENAI_ENDPOINT_1: ${AZURE_OPENAI_ENDPOINT_1}
+      AZURE_OPENAI_ENDPOINT_2: ${AZURE_OPENAI_ENDPOINT_2}
+      AZURE_OPENAI_ENDPOINT_3: ${AZURE_OPENAI_ENDPOINT_3}
+
+      # Budget Alert Configuration
+      BUDGET_ALERT_WEBHOOK_FILE: /run/secrets/budget_alert_webhook
+      SLACK_WEBHOOK_URL_FILE: /run/secrets/slack_webhook_url
+
+      # Timezone Configuration
+      TZ: "UTC"
+
+    # Port configuration
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"      # LiteLLM API
+      - "8000:8000"                       # Prometheus metrics
+      - "4001:4001"                       # Health check detailed
+
+    # Volume mounts for configuration and data
+    volumes:
+      - litellm_app_data:/app/data
+      - litellm_config:/app/config:ro
+      - litellm_ssl:/opt/agentstack/litellm/ssl:ro
+      - litellm_logs:/var/log/agentstack/litellm
+      - ./config/litellm:/opt/agentstack/litellm/config:ro
+      - ./scripts/litellm:/opt/agentstack/litellm/scripts:ro
+
+    # Secrets for secure credential management
+    secrets:
+      - litellm_postgres_password
+      - litellm_master_key
+      - litellm_api_key
+      - redis_password
+      - openai_api_key
+      - anthropic_api_key
+      - google_api_key
+      - cohere_api_key
+      - huggingface_api_key
+      - azure_openai_api_key_1
+      - azure_openai_api_key_2
+      - azure_openai_api_key_3
+      - budget_alert_webhook
+      - slack_webhook_url
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/health/liveliness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    # Resource limits optimized for LiteLLM workloads
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 8G
+        reservations:
+          cpus: '3.0'
+          memory: 4G
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 5
+        window: 180s
+      replicas: ${LITELLM_REPLICAS:-2}
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "1001:1001"
+
+    # Network configuration
+    networks:
+      litellm-network:
+        ipv4_address: 172.25.0.30
+      phoenix-network:
+        ipv4_address: 172.22.0.40
+      application-network:
+        ipv4_address: 172.24.0.40
+      monitoring-network:
+        ipv4_address: 172.23.0.60
+
+    # Dependencies
+    depends_on:
+      litellm-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "15"
+        labels: "service=litellm,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=litellm"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "prometheus.scrape=true"
+      - "prometheus.port=8000"
+      - "prometheus.path=/metrics"
+      - "traefik.enable=true"
+      - "traefik.http.routers.litellm.rule=Host(`litellm.localhost`)"
+      - "traefik.http.services.litellm.loadbalancer.server.port=4000"
+
+  # ---------------------------------------------------------------------------
+  # 4. LITELLM PROMETHEUS EXPORTER - Enhanced Metrics Collection
+  # ---------------------------------------------------------------------------
+  litellm-prometheus-exporter:
+    image: prom/prometheus:latest
+    container_name: agentstack-litellm-prometheus-exporter
+    restart: unless-stopped
+
+    environment:
+      # Prometheus Configuration
+      PROMETHEUS_CONFIG_FILE: "/etc/prometheus/prometheus.yml"
+      PROMETHEUS_STORAGE_DIR: "/prometheus"
+      PROMETHEUS_RETENTION: "${LITELLM_PROMETHEUS_RETENTION:-30d}"
+      PROMETHEUS_WEB_EXTERNAL_URL: "http://localhost:9091"
+      PROMETHEUS_WEB_ENABLE_ADMIN_API: "false"
+      PROMETHEUS_WEB_PAGE_TITLE: "AgentStack LiteLLM Metrics"
+
+      # Performance Configuration
+      PROMETHEUS_STORAGE_TSDB_RETENTION_TIME: "30d"
+      PROMETHEUS_STORAGE_TSDB_WAL_COMPRESSION: "true"
+      PROMETHEUS_STORAGE_TSDB_MAX_BLOCK_DURATION: "2h"
+
+      # Query Configuration
+      PROMETHEUS_QUERY_TIMEOUT: "2m"
+      PROMETHEUS_QUERY_MAX_SAMPLES: "50000000"
+      PROMETHEUS_QUERY_MAX_CONCURRENCY: "20"
+
+      # Timezone Configuration
+      TZ: "UTC"
+
+    # Port configuration
+    ports:
+      - "${LITELLM_PROMETHEUS_PORT:-9091}:9090"
+
+    # Volume mounts for configuration and data
+    volumes:
+      - ./config/litellm-prometheus:/etc/prometheus:ro
+      - ./config/litellm-prometheus/rules:/etc/prometheus/rules:ro
+      - ./logs/litellm-prometheus:/var/log/prometheus
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+        window: 180s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # User and group configuration (non-root)
+    user: "65534:65534"
+
+    # Network configuration
+    networks:
+      monitoring-network:
+        ipv4_address: 172.23.0.70
+
+    # Dependencies
+    depends_on:
+      litellm:
+        condition: service_healthy
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        labels: "service=litellm-prometheus-exporter,environment=production"
+
+    # Labels for monitoring and orchestration
+    labels:
+      - "com.agentstack.service=litellm-prometheus-exporter"
+      - "com.agentstack.environment=production"
+      - "com.agentstack.version=v1.0.0"
+      - "com.agentstack.monitoring.enabled=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.litellm-prometheus.rule=Host(`litellm-prometheus.localhost`)"
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================

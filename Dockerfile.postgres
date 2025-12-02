@@ -1,0 +1,166 @@
+# =============================================================================
+# AgentStack OSS - Production PostgreSQL Dockerfile
+# Version: 1.0.0
+# Description: Multi-stage production PostgreSQL with pgvector optimization
+# =============================================================================
+# Build: docker build -f Dockerfile.postgres -t agentstack-postgres:prod .
+# Usage: docker-compose -f docker-compose.production-postgres.yml up
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Build Stage - System preparation and dependency installation
+# -----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS builder
+
+# Set build arguments for version control
+ARG PG_VERSION=17
+ARG PGVECTOR_VERSION=0.8.0
+ARG BUILD_DATE
+
+# Metadata
+LABEL org.opencontainers.image.title="AgentStack PostgreSQL Production"
+LABEL org.opencontainers.image.description="Production PostgreSQL with pgvector for AI workloads"
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.vendor="AgentStack OSS"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Environment variables for build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+# Install build dependencies and security updates
+RUN apt-get update && \
+    apt-get upgrade -y -q && \
+    apt-get install -y -q --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        gnupg \
+        libreadline-dev \
+        zlib1g-dev \
+        libssl-dev \
+        pkg-config \
+        git \
+        cmake \
+        && \
+    # Add PostgreSQL official APT repository
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt/ bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    \
+    # Install PostgreSQL development packages
+    apt-get update && \
+    apt-get install -y -q --no-install-recommends \
+        postgresql-${PG_VERSION} \
+        postgresql-server-dev-${PG_VERSION} \
+        postgresql-contrib-${PG_VERSION} && \
+    \
+    # Build and install pgvector
+    git clone --branch v${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git /tmp/pgvector && \
+    cd /tmp/pgvector && \
+    # Enable ivfflat and hnsw optimizations for 1536-dimensional vectors
+    export CFLAGS="-O3 -march=native -DNDEBUG" && \
+    export CXXFLAGS="-O3 -march=native -DNDEBUG" && \
+    make PG_CONFIG=/usr/lib/postgresql/${PG_VERSION}/bin/pg_config -j$(nproc) && \
+    make PG_CONFIG=/usr/lib/postgresql/${PG_VERSION}/bin/pg_config install && \
+    \
+    # Clean up build artifacts
+    cd / && \
+    rm -rf /tmp/pgvector && \
+    apt-get remove -y build-essential git cmake && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime Stage - Minimal production image
+# -----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+
+# Set runtime arguments
+ARG PG_VERSION=17
+ARG PGVECTOR_VERSION=0.8.0
+ARG BUILD_DATE
+
+# Environment variables for runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV PGDATA=/var/lib/postgresql/data
+ENV TZ=UTC
+
+# Install runtime dependencies and security updates
+RUN apt-get update && \
+    apt-get upgrade -y -q && \
+    apt-get install -y -q --no-install-recommends \
+        postgresql-${PG_VERSION} \
+        postgresql-client-${PG_VERSION} \
+        postgresql-contrib-${PG_VERSION} \
+        ca-certificates \
+        curl \
+        jq \
+        netcat-openbsd \
+        procps \
+        tzdata \
+        && \
+    # Add PostgreSQL official APT repository for future updates
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt/ bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    \
+    # Copy pgvector from builder stage
+    --copy=from=builder /usr/lib/postgresql/${PG_VERSION}/lib/vector.so /usr/lib/postgresql/${PG_VERSION}/lib/vector.so && \
+    --copy=from=builder /usr/share/postgresql/${PG_VERSION}/extension/vector.control /usr/share/postgresql/${PG_VERSION}/extension/vector.control && \
+    --copy=from=builder /usr/share/postgresql/${PG_VERSION}/extension/vector--${PGVECTOR_VERSION}.sql /usr/share/postgresql/${PG_VERSION}/extension/vector--${PGVECTOR_VERSION}.sql && \
+    --copy=from=builder /usr/share/postgresql/${PG_VERSION}/extension/vector--1.0--${PGVECTOR_VERSION}.sql /usr/share/postgresql/${PG_VERSION}/extension/vector--1.0--${PGVECTOR_VERSION}.sql && \
+    \
+    # Create appuser for security (non-root execution)
+    groupadd -r postgres --gid=999 && \
+    useradd -r -g postgres --uid=999 --home-dir=${PGDATA} --shell=/bin/bash postgres && \
+    \
+    # Create necessary directories with proper permissions
+    mkdir -p ${PGDATA} /var/run/postgresql /opt/agentstack/postgres && \
+    chown -R postgres:postgres ${PGDATA} /var/run/postgresql /opt/agentstack/postgres && \
+    chmod 700 ${PGDATA} && \
+    \
+    # Clean up for production
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    \
+    # Configure system limits for PostgreSQL
+    echo "postgres soft nofile 65536" >> /etc/security/limits.conf && \
+    echo "postgres hard nofile 65536" >> /etc/security/limits.conf && \
+    echo "postgres soft nproc 32768" >> /etc/security/limits.conf && \
+    echo "postgres hard nproc 32768" >> /etc/security/limits.conf
+
+# Copy production configuration files
+COPY --chown=postgres:postgres config/postgresql/ /opt/agentstack/postgres/config/
+COPY --chown=postgres:postgres scripts/health-check.sh /opt/agentstack/postgres/
+COPY --chown=postgres:postgres scripts/entrypoint.sh /opt/agentstack/postgres/
+
+# Make scripts executable
+RUN chmod +x /opt/agentstack/postgres/health-check.sh /opt/agentstack/postgres/entrypoint.sh
+
+# Set working directory
+WORKDIR ${PGDATA}
+
+# Switch to non-root user
+USER postgres
+
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Health check for container orchestration
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD /opt/agentstack/postgres/health-check.sh
+
+# Volume for data persistence
+VOLUME [${PGDATA}]
+
+# Signal handling and entrypoint
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/opt/agentstack/postgres/entrypoint.sh"]
+
+# Default command
+CMD ["postgres"]

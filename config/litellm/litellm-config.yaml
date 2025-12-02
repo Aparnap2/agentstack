@@ -1,0 +1,525 @@
+# =============================================================================
+# AgentStack OSS - Production LiteLLM Configuration
+# Version: 1.0.0
+# Description: Enterprise-grade AI Gateway with load balancing, security, and observability
+# Last Updated: 2025-12-01
+# =============================================================================
+
+# General Settings
+litellm_settings:
+  # Performance and Reliability
+  num_retries: 3                     # Number of retries on failure
+  request_timeout: 60                # Request timeout in seconds
+  request_timeout_seconds: 60       # Alternative timeout setting
+  allowed_fails: 3                   # Cooldown model after N failures
+  drop_params: ["presence_penalty", "frequency_penalty", "logprobs", "top_logprobs"]  # Drop unsupported params
+  set_verbose: false                 # Disable verbose logging in production
+  success_callback: ["prometheus"]   # Enable Prometheus metrics
+  failure_callback: ["prometheus"]   # Enable Prometheus metrics for failures
+
+  # Budget and Cost Controls
+  budget: 1000.0                     # Monthly budget in USD
+  budget_currency: "USD"            # Budget currency
+  budget_duration: "30d"             # Budget reset period
+  budget_alert_threshold: 0.8        # Alert when 80% of budget is used
+  cost_tracking: true               # Enable cost tracking
+  local_cost_cache: "redis"          # Use Redis for cost caching
+  local_model_cost_map: "True"       # Use local model cost map for faster startup
+
+  # Caching and Optimization
+  cache: true                        # Enable caching
+  cache_type: "redis"                # Redis caching for distributed deployments
+  cache_redis_url: "${REDIS_URL:-redis://redis:6379/0}"
+  cache_redis_password: "${REDIS_PASSWORD}"
+  cache_ttl: 3600                    # Cache TTL in seconds (1 hour)
+  cache_max_requests: 10000         # Max requests to cache
+  cache_max_tokens: 1000000         # Max tokens to cache
+
+  # Security and Authentication
+  require_auth_header: true         # Require Authorization header
+  auth_required: true               # Require authentication
+  master_key: "${LITELLM_MASTER_KEY}"
+  api_key: "${LITELLM_API_KEY}"
+
+  # Rate Limiting
+  general_settings:
+    max_parallel_requests: 100      # Max parallel requests
+    max_budget: 1000.0             # Max budget override
+    budget_currency: "USD"         # Budget currency
+    budget_duration: "30d"         # Budget duration
+    health_check_interval: 30      # Health check interval in seconds
+    request_timeout: 60            # Request timeout
+    allowed_fails: 3               # Allowed failures before cooldown
+
+# Router Settings for Load Balancing and Failover
+router_settings:
+  # Load Balancing Strategy
+  routing_strategy: "simple-shuffle"  # Options: simple-shuffle, least-busy, usage-based-routing, latency-based-routing, cost-based-routing
+
+  # Model Aliases and Versioning
+  model_group_alias:
+    # GPT-4 Family
+    "gpt-4-turbo":
+      model: "gpt-4o"
+      hidden: false
+    "gpt-4-1106-preview":
+      model: "gpt-4o"
+      hidden: true
+    "gpt-4-0125-preview":
+      model: "gpt-4o"
+      hidden: true
+
+    # GPT-3.5 Family
+    "gpt-3.5-turbo-16k":
+      model: "gpt-3.5-turbo"
+      hidden: false
+    "gpt-3.5-turbo-1106":
+      model: "gpt-3.5-turbo"
+      hidden: true
+
+    # Claude Family
+    "claude-3-opus":
+      model: "claude-3-opus-20240229"
+      hidden: false
+    "claude-3-sonnet":
+      model: "claude-3-sonnet-20240229"
+      hidden: false
+    "claude-3-haiku":
+      model: "claude-3-haiku-20240307"
+      hidden: false
+
+  # Retry and Timeout Configuration
+  num_retries: 3                   # Number of retries per model group
+  timeout: 30                      # Timeout in seconds
+  retry_after: 1                  # Initial retry delay in seconds
+  max_retry_after: 60             # Maximum retry delay
+  exponential_backoff: true       # Enable exponential backoff
+
+  # Redis for Distributed Load Balancing
+  redis_host: "${REDIS_HOST:-redis}"
+  redis_port: "${REDIS_PORT:-6379}"
+  redis_password: "${REDIS_PASSWORD}"
+  redis_db: "${REDIS_DB:-0}"
+  redis_ssl: "${REDIS_SSL:-false}"
+
+  # Health Check and Failover
+  health_check: true              # Enable health checks
+  health_check_interval: 30       # Health check interval in seconds
+  fallback_models: true          # Enable fallback models
+  context_window_fallbacks: true  # Enable context window fallbacks
+
+  # Performance Optimization
+  max_parallel_requests: 100      # Max parallel requests per model group
+  queue_size: 1000               # Queue size for pending requests
+  request_timeout: 30            # Request timeout in seconds
+
+# Model List with Multiple Providers and Load Balancing
+model_list:
+  # OpenAI GPT-4o Series - Primary Models
+  - model_name: "gpt-4o"
+    litellm_params:
+      model: "gpt-4o"
+      api_key: "${OPENAI_API_KEY}"
+      rpm: 10000                   # Requests per minute
+      tpm: 2000000                 # Tokens per minute
+      max_tokens: 128000          # Max tokens per request
+      temperature: 0.0            # Default temperature
+      timeout: 60                 # Request timeout
+      supports_function_calling: true
+      supports_vision: true
+      supports_json_mode: true
+
+  - model_name: "gpt-4o"
+    litellm_params:
+      model: "gpt-4o"
+      api_base: "${AZURE_OPENAI_ENDPOINT_1}"
+      api_key: "${AZURE_OPENAI_API_KEY_1}"
+      api_version: "2024-02-15-preview"
+      rpm: 8000
+      tpm: 1600000
+      max_tokens: 128000
+      timeout: 60
+
+  - model_name: "gpt-4o"
+    litellm_params:
+      model: "gpt-4o"
+      api_base: "${AZURE_OPENAI_ENDPOINT_2}"
+      api_key: "${AZURE_OPENAI_API_KEY_2}"
+      api_version: "2024-02-15-preview"
+      rpm: 8000
+      tpm: 1600000
+      max_tokens: 128000
+      timeout: 60
+
+  # OpenAI GPT-3.5 Turbo Series
+  - model_name: "gpt-3.5-turbo"
+    litellm_params:
+      model: "gpt-3.5-turbo"
+      api_key: "${OPENAI_API_KEY}"
+      rpm: 10000
+      tpm: 4000000
+      max_tokens: 16384
+      timeout: 30
+
+  - model_name: "gpt-3.5-turbo"
+    litellm_params:
+      model: "gpt-3.5-turbo"
+      api_base: "${AZURE_OPENAI_ENDPOINT_3}"
+      api_key: "${AZURE_OPENAI_API_KEY_3}"
+      api_version: "2024-02-15-preview"
+      rpm: 8000
+      tpm: 3200000
+      max_tokens: 16384
+      timeout: 30
+
+  # Anthropic Claude Models
+  - model_name: "claude-3-opus-20240229"
+    litellm_params:
+      model: "claude-3-opus-20240229"
+      api_key: "${ANTHROPIC_API_KEY}"
+      rpm: 5000
+      tpm: 400000
+      max_tokens: 200000
+      timeout: 60
+      max_input_tokens: 200000
+
+  - model_name: "claude-3-sonnet-20240229"
+    litellm_params:
+      model: "claude-3-sonnet-20240229"
+      api_key: "${ANTHROPIC_API_KEY}"
+      rpm: 5000
+      tpm: 400000
+      max_tokens: 200000
+      timeout: 60
+      max_input_tokens: 200000
+
+  - model_name: "claude-3-haiku-20240307"
+    litellm_params:
+      model: "claude-3-haiku-20240307"
+      api_key: "${ANTHROPIC_API_KEY}"
+      rpm: 10000
+      tpm: 1000000
+      max_tokens: 200000
+      timeout: 30
+      max_input_tokens: 200000
+
+  # Google Gemini Models
+  - model_name: "gemini-1.5-pro"
+    litellm_params:
+      model: "gemini/gemini-1.5-pro-latest"
+      api_key: "${GOOGLE_API_KEY}"
+      rpm: 15000
+      tpm: 3200000
+      max_tokens: 2097152
+      timeout: 60
+
+  - model_name: "gemini-1.5-flash"
+    litellm_params:
+      model: "gemini/gemini-1.5-flash-latest"
+      api_key: "${GOOGLE_API_KEY}"
+      rpm: 15000
+      tpm: 10000000
+      max_tokens: 1048576
+      timeout: 30
+
+  # Open Source Models (via Hugging Face)
+  - model_name: "llama-3.1-8b-instruct"
+    litellm_params:
+      model: "huggingface/meta-llama/Llama-3.1-8B-Instruct"
+      api_base: "${HUGGINGFACE_API_BASE}"
+      api_key: "${HUGGINGFACE_API_KEY}"
+      rpm: 1000
+      tpm: 200000
+      max_tokens: 131072
+      timeout: 60
+
+  - model_name: "mixtral-8x7b-instruct"
+    litellm_params:
+      model: "huggingface/mistralai/Mixtral-8x7B-Instruct-v0.1"
+      api_base: "${HUGGINGFACE_API_BASE}"
+      api_key: "${HUGGINGFACE_API_KEY}"
+      rpm: 500
+      tpm: 100000
+      max_tokens: 32768
+      timeout: 60
+
+  # Cohere Models
+  - model_name: "command-r-plus"
+    litellm_params:
+      model: "cohere/command-r-plus"
+      api_key: "${COHERE_API_KEY}"
+      rpm: 1000
+      tpm: 400000
+      max_tokens: 128000
+      timeout: 60
+
+  - model_name: "command"
+    litellm_params:
+      model: "cohere/command"
+      api_key: "${COHERE_API_KEY}"
+      rpm: 2000
+      tpm: 400000
+      max_tokens: 4000
+      timeout: 30
+
+# Fallback Configuration
+fallbacks:
+  "gpt-4o": ["claude-3-opus-20240229", "gemini-1.5-pro", "command-r-plus"]
+  "gpt-3.5-turbo": ["claude-3-haiku-20240307", "gemini-1.5-flash", "command"]
+  "claude-3-opus-20240229": ["gpt-4o", "gemini-1.5-pro", "command-r-plus"]
+  "claude-3-sonnet-20240229": ["gpt-4o", "gemini-1.5-pro"]
+  "claude-3-haiku-20240307": ["gpt-3.5-turbo", "gemini-1.5-flash"]
+
+# Context Window Fallbacks
+context_window_fallbacks:
+  "gpt-4o": ["gpt-4o"]  # GPT-4o has largest context
+  "gpt-3.5-turbo": ["gpt-4o", "claude-3-opus-20240229", "gemini-1.5-pro"]
+  "claude-3-opus-20240229": ["gpt-4o", "gemini-1.5-pro"]
+  "claude-3-sonnet-20240229": ["claude-3-opus-20240229", "gpt-4o", "gemini-1.5-pro"]
+  "claude-3-haiku-20240307": ["gpt-4o", "claude-3-opus-20240229", "gemini-1.5-pro"]
+
+# Security and Access Control
+security:
+  # API Key Management
+  require_auth_header: true
+  allowed_api_keys:
+    - "${LITELLM_MASTER_KEY}"
+    - "${LITELLM_API_KEY}"
+
+  # CORS Configuration
+  cors:
+    allow_origins:
+      - "${FRONTEND_URL:-http://localhost:3000}"
+      - "${PHOENIX_URL:-http://localhost:6006}"
+      - "${GRAFANA_URL:-http://localhost:3001}"
+    allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers: ["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"]
+    allow_credentials: true
+    max_age: 86400
+
+  # Rate Limiting
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 1000
+    requests_per_hour: 50000
+    requests_per_day: 1000000
+    burst_size: 100
+    penalty_duration: 300  # 5 minutes
+    penalty_multiplier: 2
+
+  # Input Validation
+  input_validation:
+    max_request_size: 10485760  # 10MB
+    max_prompt_length: 1000000  # 1M characters
+    allowed_mime_types: ["application/json", "text/plain"]
+    sanitize_inputs: true
+    block_patterns:
+      - "password"
+      - "secret"
+      - "token"
+      - "api_key"
+      - "private_key"
+
+  # Security Headers
+  security_headers:
+    x_frame_options: "DENY"
+    x_content_type_options: "nosniff"
+    x_xss_protection: "1; mode=block"
+    strict_transport_security: "max-age=31536000; includeSubDomains"
+    content_security_policy: "default-src 'self'"
+    referrer_policy: "strict-origin-when-cross-origin"
+
+# Monitoring and Observability
+observability:
+  # OpenTelemetry Configuration
+  opentelemetry:
+    enabled: true
+    endpoint: "${OTEL_ENDPOINT:-http://otel-collector:4318}"
+    service_name: "agentstack-litellm"
+    service_version: "1.0.0"
+    environment: "${ENVIRONMENT:-production}"
+    sample_rate: 1.0
+    batch_size: 512
+    max_queue_size: 2048
+    timeout: 30
+
+  # Prometheus Metrics
+  prometheus:
+    enabled: true
+    port: 8000
+    path: "/metrics"
+    namespace: "litellm"
+    subsystem: "agentstack"
+    labels:
+      service: "agentstack-litellm"
+      environment: "${ENVIRONMENT:-production}"
+      version: "1.0.0"
+
+  # Custom Metrics
+  custom_metrics:
+    request_count: true
+    request_duration: true
+    token_count: true
+    error_count: true
+    cost_tracking: true
+    model_usage: true
+    provider_usage: true
+    cache_hit_rate: true
+    rate_limit_hits: true
+
+  # Health Check Endpoints
+  health_checks:
+    enabled: true
+    path: "/health"
+    detailed_path: "/health/detailed"
+    check_interval: 30
+    timeout: 10
+    retries: 3
+
+  # Logging Configuration
+  logging:
+    level: "${LOG_LEVEL:-INFO}"
+    format: "json"
+    structured: true
+    include_timestamps: true
+    include_request_id: true
+    include_user_id: true
+    include_model_info: true
+    include_cost_info: true
+    max_log_size: "100MB"
+    log_retention: 30  # days
+
+# Performance Optimization
+performance:
+  # Connection Pooling
+  connection_pooling:
+    enabled: true
+    max_connections: 1000
+    max_connections_per_route: 100
+    keep_alive_timeout: 30
+    max_idle_time: 60
+    validate_connection: true
+
+  # Request Processing
+  request_processing:
+    batch_processing: true
+    batch_size: 32
+    batch_timeout: 0.1  # seconds
+    compression: true
+    stream_responses: true
+    chunk_size: 8192
+
+  # Memory Management
+  memory_management:
+    max_memory_usage: "8GB"
+    gc_threshold: 0.8
+    max_request_size: "50MB"
+    response_streaming: true
+    memory_cleanup_interval: 300  # seconds
+
+  # Worker Configuration
+  workers:
+    num_workers: "${NUM_WORKERS:-8}"
+    max_requests_per_worker: 10000
+    worker_timeout: 60
+    worker_restart_interval: 3600  # 1 hour
+
+# Budget and Cost Management
+budget_management:
+  # Global Budget Settings
+  global_budget:
+    enabled: true
+    monthly_limit: 10000.0  # $10,000 per month
+    daily_limit: 500.0     # $500 per day
+    hourly_limit: 50.0     # $50 per hour
+    currency: "USD"
+    alert_threshold: 0.8   # Alert at 80%
+    hard_limit: 1.0       # Hard stop at 100%
+
+  # Per-User Budgets
+  user_budgets:
+    enabled: true
+    default_limit: 100.0  # $100 per user per month
+    daily_limit: 10.0     # $10 per user per day
+    hourly_limit: 5.0     # $5 per user per hour
+
+  # Cost Tracking
+  cost_tracking:
+    enabled: true
+    granular_tracking: true
+    track_input_tokens: true
+    track_output_tokens: true
+    track_model_costs: true
+    track_provider_costs: true
+    track_cache_hits: true
+
+  # Alerts and Notifications
+  alerts:
+    enabled: true
+    webhook_url: "${BUDGET_ALERT_WEBHOOK}"
+    email_alerts: "${BUDGET_ALERT_EMAIL}"
+    slack_webhook: "${SLACK_WEBHOOK_URL}"
+    alert_thresholds:
+      warning: 0.7   # 70%
+      critical: 0.9  # 90%
+      emergency: 1.0 # 100%
+
+# Additional Advanced Settings
+advanced:
+  # Model-Specific Settings
+  model_settings:
+    gpt-4o:
+      temperature_range: [0.0, 2.0]
+      max_tokens: 128000
+      supports_functions: true
+      supports_vision: true
+      supports_streaming: true
+
+    claude-3-opus-20240229:
+      temperature_range: [0.0, 1.0]
+      max_tokens: 200000
+      supports_functions: true
+      supports_vision: false
+      supports_streaming: true
+
+    gemini-1.5-pro:
+      temperature_range: [0.0, 2.0]
+      max_tokens: 2097152
+      supports_functions: true
+      supports_vision: true
+      supports_streaming: true
+
+  # Custom Hooks and Callbacks
+  hooks:
+    pre_request:
+      - name: "validation_hook"
+        enabled: true
+      - name: "auth_hook"
+        enabled: true
+      - name: "rate_limit_hook"
+        enabled: true
+
+    post_request:
+      - name: "logging_hook"
+        enabled: true
+      - name: "metrics_hook"
+        enabled: true
+      - name: "cost_tracking_hook"
+        enabled: true
+
+    on_error:
+      - name: "error_logging_hook"
+        enabled: true
+      - name: "fallback_hook"
+        enabled: true
+      - name: "alert_hook"
+        enabled: true
+
+  # Experimental Features
+  experimental:
+    request_batching: true
+    response_caching: true
+    model_fallback: true
+    context_aware_routing: false
+    predictive_scaling: false
+    auto_tuning: false

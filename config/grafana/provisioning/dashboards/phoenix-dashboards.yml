@@ -1,0 +1,75 @@
+# =============================================================================
+# AgentStack OSS - Grafana Dashboard Provisioning for Phoenix LLM Observability
+# Version: 1.0.0
+# Description: Production dashboard provisioning for Phoenix Arize LLM monitoring
+# =============================================================================
+# This configuration automatically loads production-ready dashboards for
+# comprehensive LLM observability, performance monitoring, and cost analysis
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  # ---------------------------------------------------------------------------
+  # Dashboard Providers Configuration
+  # ---------------------------------------------------------------------------
+  - name: 'Phoenix LLM Observability Dashboards'
+    orgId: 1
+    folder: 'Phoenix LLM Observability'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-llm
+
+  - name: 'Phoenix Performance Dashboards'
+    orgId: 1
+    folder: 'Phoenix Performance'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-performance
+
+  - name: 'Phoenix Cost & Usage Dashboards'
+    orgId: 1
+    folder: 'Phoenix Cost & Usage'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-cost
+
+  - name: 'Phoenix Infrastructure Dashboards'
+    orgId: 1
+    folder: 'Phoenix Infrastructure'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-infrastructure
+
+  - name: 'Phoenix Security Dashboards'
+    orgId: 1
+    folder: 'Phoenix Security'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-security
+
+  - name: 'Phoenix Alerts & Health Dashboards'
+    orgId: 1
+    folder: 'Phoenix Alerts & Health'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/phoenix-health
+
+# =============================================================================
+# END OF DASHBOARD PROVISIONING CONFIGURATION
+# =============================================================================
+# This configuration provides automatic dashboard loading for comprehensive
+# LLM observability monitoring with Phoenix Arize integration.
+# =============================================================================
